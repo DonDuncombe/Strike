@@ -5,8 +5,10 @@ signal state_changed(old_state: String, new_state: String)
 signal weapon_switched(weapon_index: int, weapon_data: WeaponData)
 signal weapon_used(weapon_index: int, weapon_data: WeaponData)
 signal ability_changed(ability: StringName, unlocked: bool)
+signal stamina_changed(value: float)
+signal stamina_exhausted()
 
-enum PlayerState { IDLE, RUN, JUMP, FALL, DASH, WALL_SLIDE }
+enum PlayerState { IDLE, RUN, JUMP, FALL, DASH, WALL_SLIDE, WALL_HOLD, WALL_CLIMB, WALL_REPOSITION }
 
 @export_category("Node References")
 @export var sprite: Node2D
@@ -17,6 +19,23 @@ enum PlayerState { IDLE, RUN, JUMP, FALL, DASH, WALL_SLIDE }
 @export var friction: float = 1600.0
 @export var air_acceleration: float = 800.0
 @export var air_resistance: float = 300.0
+
+@export_category("Stamina")
+## Stamina percentage. Also sets the starting stamina in the Inspector.
+@export_range(0.0, 100.0, 0.1) var stamina: float = 100.0:
+	set(value):
+		var previous: float = stamina
+		stamina = clampf(value, 0.0, 100.0)
+		if not is_equal_approx(previous, stamina):
+			stamina_changed.emit(stamina)
+			if previous > 0.0 and stamina == 0.0:
+				stamina_exhausted.emit()
+## Percentage points consumed or restored per second.
+@export_range(0.0, 100.0, 0.1) var wall_stamina_drain: float = 5.0
+@export_range(0.0, 100.0, 0.1) var dash_stamina_drain: float = 10.0
+@export_range(0.0, 100.0, 0.1) var stamina_recovery: float = 8.0
+## General movement slows by at most half; low-stamina climbing has its own limit.
+@export_range(0.5, 1.0, 0.01) var exhausted_speed_multiplier: float = 0.5
 
 @export_category("Jump & Gravity")
 @export var jump_height: float = 120.0
@@ -39,6 +58,14 @@ enum PlayerState { IDLE, RUN, JUMP, FALL, DASH, WALL_SLIDE }
 @export var wall_climb_speed: float = 120.0
 @export var wall_jump_impulse: Vector2 = Vector2(250.0, -320.0)
 @export var wall_jump_control_lock: float = 0.15
+## Maximum separation between away and jump presses, in either order (seconds).
+@export_range(0.0, 0.5, 0.01, "or_greater") var wall_jump_input_grace: float = 0.2
+## Time spent repositioning after reaching the opposite wall following a wall jump.
+@export_range(0.0, 5.0, 0.05, "or_greater") var wall_reposition_duration: float = 1.0
+@export var wall_drop_impulse: Vector2 = Vector2(180.0, 120.0)
+@export_range(0.0, 100.0, 0.1) var wall_low_stamina_threshold: float = 10.0
+@export_range(0.0, 100.0, 0.1) var wall_tired_slide_speed: float = 20.0
+@export_range(0.0, 1.0, 0.01) var wall_tired_climb_multiplier: float = 0.15
 
 @export_category("Dash Feature")
 @export var dash_speed: float = 450.0
@@ -59,6 +86,11 @@ var jump_buffer_timer: float = 0.0
 var dash_timer: float = 0.0
 var dash_cooldown_timer: float = 0.0
 var wall_jump_timer: float = 0.0
+var wall_reposition_timer: float = 0.0
+var _wall_jump_origin_normal: float = 0.0
+var _wall_jump_input_timer: float = 0.0
+var _wall_away_input_timer: float = 0.0
+var _wall_away_normal: float = 0.0
 var is_dashing: bool = false
 var dash_direction: Vector2 = Vector2.RIGHT
 var active_weapon_index: int = 0
@@ -125,6 +157,13 @@ func set_ability_unlocked(ability: StringName, unlocked: bool = true) -> void:
 
 func _air_jumps_available() -> int:
 	return maxi(0, max_jumps - 1) if double_jump_unlocked else 0
+
+func get_stamina_speed_multiplier() -> float:
+	return lerpf(clampf(exhausted_speed_multiplier, 0.5, 1.0), 1.0, stamina / 100.0)
+
+func _recover_stamina(delta: float) -> void:
+	if is_on_floor() and cached_input_dir == 0.0 and velocity.is_zero_approx() and not is_dashing:
+		stamina += maxf(0.0, stamina_recovery) * delta
 
 func _init_state_machine() -> void:
 	_state_transitions = {
@@ -195,17 +234,48 @@ func _physics_process(delta: float) -> void:
 		move_and_slide()
 		_process_state_transitions()
 		return
-	_handle_jump(cached_input_dir)
+	if Input.is_action_just_pressed("move_jump"):
+		jump_buffer_timer = jump_buffer_time
+		if wall_climb_unlocked and stamina > 0.0 and is_on_wall_only():
+			_wall_jump_input_timer = maxf(0.0, wall_jump_input_grace)
+	# Upgrade a recent downward push-off to a wall jump, even after losing contact.
+	var late_wall_jump: bool = (
+		Input.is_action_just_pressed("move_jump") and _wall_away_input_timer > 0.0
+		and wall_climb_unlocked and stamina > 0.0 and not is_on_floor()
+		and cached_input_dir * _wall_away_normal >= 0.0 and climb_input <= 0.0
+	)
+	if late_wall_jump:
+		_execute_wall_jump(_wall_away_normal)
 	_apply_horizontal_movement(cached_input_dir, delta)
-	_handle_wall_interactions(cached_input_dir, climb_input)
+	if not late_wall_jump and not _handle_wall_interactions(cached_input_dir, climb_input, delta):
+		_handle_jump(cached_input_dir)
 	_apply_gravity(delta)
 	
 	_resolve_facing(cached_input_dir)
 
 	move_and_slide()
+	_recover_stamina(delta)
 	_process_state_transitions()
 
 func _process_state_transitions() -> void:
+	if is_climbing and is_on_wall_only() and not is_dashing:
+		if wall_reposition_timer > 0.0:
+			_transition_to_state(PlayerState.WALL_REPOSITION)
+		elif velocity.y < 0.0:
+			_transition_to_state(PlayerState.WALL_CLIMB)
+		elif velocity.y > 0.0:
+			_transition_to_state(PlayerState.WALL_SLIDE)
+		else:
+			_transition_to_state(PlayerState.WALL_HOLD)
+		return
+	if current_state in [PlayerState.WALL_HOLD, PlayerState.WALL_CLIMB, PlayerState.WALL_REPOSITION]:
+		if is_dashing:
+			_transition_to_state(PlayerState.DASH)
+		elif is_on_floor():
+			_transition_to_state(PlayerState.RUN if absf(velocity.x) > 0.0 else PlayerState.IDLE)
+		else:
+			_transition_to_state(PlayerState.JUMP if velocity.y < 0.0 else PlayerState.FALL)
+		return
 	if not _state_transitions.has(current_state):
 		return
 
@@ -239,7 +309,7 @@ func _cond_is_dashing() -> bool:
 	return is_dashing
 
 func _cond_is_wall_sliding() -> bool:
-	return wall_climb_unlocked and is_on_wall_only() and velocity.y > 0.0 and cached_input_dir == -get_wall_normal().x
+	return is_climbing and is_on_wall_only() and velocity.y > 0.0
 
 func _cond_not_wall_sliding() -> bool:
 	return not _cond_is_wall_sliding()
@@ -313,6 +383,9 @@ func _update_timers(delta: float) -> void:
 	jump_buffer_timer = maxf(0.0, jump_buffer_timer - delta)
 	dash_cooldown_timer = maxf(0.0, dash_cooldown_timer - delta)
 	wall_jump_timer = maxf(0.0, wall_jump_timer - delta)
+	wall_reposition_timer = maxf(0.0, wall_reposition_timer - delta)
+	_wall_jump_input_timer = maxf(0.0, _wall_jump_input_timer - delta)
+	_wall_away_input_timer = maxf(0.0, _wall_away_input_timer - delta)
 
 func _update_weapon_cooldowns(delta: float) -> void:
 	for weapon in inventory:
@@ -321,6 +394,9 @@ func _update_weapon_cooldowns(delta: float) -> void:
 
 func _handle_ground_state() -> void:
 	if is_on_floor():
+		_clear_wall_jump_inputs()
+		_wall_jump_origin_normal = 0.0
+		wall_reposition_timer = 0.0
 		coyote_timer = coyote_time
 		ground_jump_available = true
 		jumps_left = _air_jumps_available()
@@ -342,24 +418,20 @@ func _apply_horizontal_movement(input_dir: float, delta: float) -> void:
 	var deccel: float = friction if is_on_floor() else air_resistance
 
 	if input_dir != 0.0:
-		velocity.x = move_toward(velocity.x, input_dir * move_speed, accel * delta)
+		velocity.x = move_toward(velocity.x, input_dir * move_speed * get_stamina_speed_multiplier(), accel * delta)
 	else:
 		velocity.x = move_toward(velocity.x, 0.0, deccel * delta)
 
-func _handle_jump(input_dir: float) -> void:
-	if Input.is_action_just_pressed("move_jump"):
-		jump_buffer_timer = jump_buffer_time
-
+func _handle_jump(_input_dir: float) -> void:
 	if jump_buffer_timer > 0.0:
 		if ground_jump_available and coyote_timer > 0.0:
 			_execute_jump(false)
-		elif wall_climb_unlocked and is_on_wall_only() and input_dir != 0.0:
-			_execute_wall_jump()
 		elif jumps_left > 0:
 			_execute_jump(true)
 
 func _execute_jump(uses_air_jump: bool) -> void:
-	velocity.y = initial_jump_velocity
+	_clear_wall_jump_inputs()
+	velocity.y = initial_jump_velocity * get_stamina_speed_multiplier()
 	coyote_timer = 0.0
 	jump_buffer_timer = 0.0
 	ground_jump_available = false
@@ -367,10 +439,18 @@ func _execute_jump(uses_air_jump: bool) -> void:
 	if uses_air_jump:
 		jumps_left -= 1
 
-func _execute_wall_jump() -> void:
-	var wall_normal: float = get_wall_normal().x
-	velocity.x = wall_normal * wall_jump_impulse.x
-	velocity.y = wall_jump_impulse.y
+func _clear_wall_jump_inputs() -> void:
+	_wall_jump_input_timer = 0.0
+	_wall_away_input_timer = 0.0
+	_wall_away_normal = 0.0
+
+func _execute_wall_jump(saved_normal: float = 0.0) -> void:
+	var wall_normal: float = saved_normal if saved_normal != 0.0 else get_wall_normal().x
+	_clear_wall_jump_inputs()
+	_wall_jump_origin_normal = wall_normal
+	wall_reposition_timer = 0.0
+	velocity.x = wall_normal * wall_jump_impulse.x * get_stamina_speed_multiplier()
+	velocity.y = wall_jump_impulse.y * get_stamina_speed_multiplier()
 	jump_buffer_timer = 0.0
 	wall_jump_timer = wall_jump_control_lock
 	jumps_left = _air_jumps_available()
@@ -378,14 +458,63 @@ func _execute_wall_jump() -> void:
 	ground_jump_available = false
 	is_climbing = false
 
-func _handle_wall_interactions(input_dir: float, climb_input: float) -> void:
+func _handle_wall_interactions(input_dir: float, climb_input: float, delta: float) -> bool:
+	var was_climbing: bool = is_climbing
 	is_climbing = false
-	if wall_climb_unlocked and is_on_wall_only():
-		if Input.is_action_pressed("climb"):
-			is_climbing = true
-			velocity.y = climb_input * wall_climb_speed
-		elif velocity.y > 0.0 and input_dir == -get_wall_normal().x:
-			velocity.y = minf(velocity.y, wall_slide_speed)
+	if not wall_climb_unlocked or not is_on_wall_only() or wall_jump_timer > 0.0:
+		return false
+	if stamina <= 0.0:
+		if was_climbing:
+			velocity.y = maxf(0.0, velocity.y)
+		return true
+	var wall_normal: float = get_wall_normal().x
+	if _wall_jump_origin_normal * wall_normal < 0.0:
+		wall_reposition_timer = maxf(0.0, wall_reposition_duration)
+		_wall_jump_origin_normal = 0.0
+		# TODO: Play the wall repositioning animation during WALL_REPOSITION.
+		# Start on arrival, not takeoff; allow holding/sliding but block upward climbing.
+	# Normals point away from either wall: positive product means away input.
+	if input_dir * wall_normal > 0.0:
+		if _wall_jump_input_timer > 0.0 or Input.is_action_just_pressed("move_jump"):
+			_execute_wall_jump()
+		else:
+			_release_wall(true)
+		return true
+	if climb_input > 0.0:
+		_release_wall(false)
+		return true
+	var holding: bool = input_dir * wall_normal < 0.0
+	var climbing: bool = climb_input < 0.0
+	if not holding and not climbing:
+		return false
+	stamina -= maxf(0.0, wall_stamina_drain) * delta
+	if stamina <= 0.0:
+		velocity.y = maxf(0.0, velocity.y)
+		return true
+	is_climbing = true
+	var tired: bool = stamina < wall_low_stamina_threshold
+	if climbing and wall_reposition_timer <= 0.0:
+		velocity.y = climb_input * wall_climb_speed * get_stamina_speed_multiplier()
+		if tired:
+			velocity.y *= clampf(wall_tired_climb_multiplier, 0.0, 1.0)
+	else:
+		velocity.y = maxf(0.0, wall_tired_slide_speed) if tired else 0.0
+	# Push into the surface to retain collision contact while holding or climbing.
+	velocity.x = -wall_normal * move_speed * get_stamina_speed_multiplier()
+	return true
+
+func _release_wall(push_away: bool) -> void:
+	_clear_wall_jump_inputs()
+	if push_away:
+		_wall_away_normal = get_wall_normal().x
+		_wall_away_input_timer = maxf(0.0, wall_jump_input_grace)
+	velocity.x = get_wall_normal().x * absf(wall_drop_impulse.x) * get_stamina_speed_multiplier() if push_away else 0.0
+	velocity.y = maxf(velocity.y, absf(wall_drop_impulse.y) * get_stamina_speed_multiplier())
+	wall_jump_timer = wall_jump_control_lock
+	jump_buffer_timer = 0.0
+	coyote_timer = 0.0
+	ground_jump_available = false
+	is_climbing = false
 
 func _handle_dash_input() -> void:
 	if dash_unlocked and Input.is_action_just_pressed("dash") and dash_cooldown_timer <= 0.0 and not is_dashing:
@@ -400,13 +529,16 @@ func _handle_dash_input() -> void:
 			dash_direction = Vector2(_get_current_facing_direction(), 0.0)
 
 		is_dashing = true
+		_clear_wall_jump_inputs()
 		dash_start_vertical_velocity = velocity.y
 		dash_timer = dash_duration
 		dash_cooldown_timer = dash_cooldown
 
 func _process_dash(delta: float) -> void:
+	is_climbing = false
+	stamina -= maxf(0.0, dash_stamina_drain) * minf(delta, maxf(0.0, dash_timer))
 	dash_timer -= delta
-	velocity = dash_direction * dash_speed
+	velocity = dash_direction * dash_speed * get_stamina_speed_multiplier()
 	
 	if dash_preserve_vertical and is_zero_approx(dash_direction.y):
 		velocity.y = dash_start_vertical_velocity
