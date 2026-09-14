@@ -4,6 +4,7 @@ extends CharacterBody2D
 signal state_changed(old_state: String, new_state: String)
 signal weapon_switched(weapon_index: int, weapon_data: WeaponData)
 signal weapon_used(weapon_index: int, weapon_data: WeaponData)
+signal ability_changed(ability: StringName, unlocked: bool)
 
 enum PlayerState { IDLE, RUN, JUMP, FALL, DASH, WALL_SLIDE }
 
@@ -23,6 +24,11 @@ enum PlayerState { IDLE, RUN, JUMP, FALL, DASH, WALL_SLIDE }
 @export var time_to_descent: float = 0.30
 @export var max_fall_speed: float = 400.0
 @export var max_jumps: int = 2
+
+@export_category("Unlockable Abilities")
+@export var dash_unlocked: bool = false
+@export var double_jump_unlocked: bool = false
+@export var wall_climb_unlocked: bool = false
 
 @export_category("Juice & Assist Timers")
 @export var coyote_time: float = 0.15
@@ -57,13 +63,16 @@ var is_dashing: bool = false
 var dash_direction: Vector2 = Vector2.RIGHT
 var active_weapon_index: int = 0
 var cached_input_dir: float = 0.0
+var ground_jump_available: bool = false
+var is_climbing: bool = false
+var dash_start_vertical_velocity: float = 0.0
 
 var current_state: PlayerState = PlayerState.IDLE
 var _state_transitions: Dictionary = {}
 
 func _ready() -> void:
 	_recalculate_physics()
-	jumps_left = max_jumps
+	jumps_left = _air_jumps_available()
 	_setup_sprite_reference()
 	_init_state_machine()
 
@@ -85,6 +94,37 @@ func _recalculate_physics() -> void:
 	gravity_jump = (2.0 * jump_height) / (time_to_peak * time_to_peak)
 	gravity_fall = (2.0 * jump_height) / (time_to_descent * time_to_descent)
 	initial_jump_velocity = -((2.0 * jump_height) / time_to_peak)
+
+# Call this from pickups or progression code; the exported flags set starting abilities.
+func set_ability_unlocked(ability: StringName, unlocked: bool = true) -> void:
+	match ability:
+		&"dash":
+			if dash_unlocked == unlocked:
+				return
+			dash_unlocked = unlocked
+			if not unlocked:
+				is_dashing = false
+				dash_timer = 0.0
+		&"double_jump":
+			if double_jump_unlocked == unlocked:
+				return
+			double_jump_unlocked = unlocked
+			jumps_left = mini(jumps_left, _air_jumps_available())
+			if unlocked and is_on_floor():
+				jumps_left = _air_jumps_available()
+		&"wall_climb":
+			if wall_climb_unlocked == unlocked:
+				return
+			wall_climb_unlocked = unlocked
+			if not unlocked:
+				is_climbing = false
+		_:
+			push_warning("Unknown player ability: %s" % ability)
+			return
+	ability_changed.emit(ability, unlocked)
+
+func _air_jumps_available() -> int:
+	return maxi(0, max_jumps - 1) if double_jump_unlocked else 0
 
 func _init_state_machine() -> void:
 	_state_transitions = {
@@ -135,6 +175,7 @@ func _init_state_machine() -> void:
 func _physics_process(delta: float) -> void:
 	_update_timers(delta)
 	_update_weapon_cooldowns(delta)
+	_handle_weapon_input()
 	
 	cached_input_dir = Input.get_axis("move_left", "move_right")
 	var climb_input: float = Input.get_axis("move_up", "move_down")
@@ -148,11 +189,16 @@ func _physics_process(delta: float) -> void:
 
 	_handle_ground_state()
 	_handle_dash_input()
+	if is_dashing:
+		_process_dash(delta)
+		_update_sprite_facing(dash_direction.x)
+		move_and_slide()
+		_process_state_transitions()
+		return
 	_handle_jump(cached_input_dir)
-	_handle_wall_interactions(cached_input_dir, climb_input)
 	_apply_horizontal_movement(cached_input_dir, delta)
+	_handle_wall_interactions(cached_input_dir, climb_input)
 	_apply_gravity(delta)
-	_handle_weapon_input()
 	
 	_resolve_facing(cached_input_dir)
 
@@ -193,7 +239,7 @@ func _cond_is_dashing() -> bool:
 	return is_dashing
 
 func _cond_is_wall_sliding() -> bool:
-	return is_on_wall_only() and velocity.y > 0.0 and cached_input_dir == -get_wall_normal().x
+	return wall_climb_unlocked and is_on_wall_only() and velocity.y > 0.0 and cached_input_dir == -get_wall_normal().x
 
 func _cond_not_wall_sliding() -> bool:
 	return not _cond_is_wall_sliding()
@@ -276,10 +322,12 @@ func _update_weapon_cooldowns(delta: float) -> void:
 func _handle_ground_state() -> void:
 	if is_on_floor():
 		coyote_timer = coyote_time
-		jumps_left = max_jumps
+		ground_jump_available = true
+		jumps_left = _air_jumps_available()
+		is_climbing = false
 
 func _apply_gravity(delta: float) -> void:
-	if not is_on_floor() and not is_dashing:
+	if not is_on_floor() and not is_dashing and not is_climbing:
 		var current_gravity: float = gravity_jump
 		if velocity.y > 0.0 or not Input.is_action_pressed("move_jump"):
 			current_gravity = gravity_fall
@@ -303,18 +351,21 @@ func _handle_jump(input_dir: float) -> void:
 		jump_buffer_timer = jump_buffer_time
 
 	if jump_buffer_timer > 0.0:
-		if coyote_timer > 0.0:
-			_execute_jump()
-		elif is_on_wall_only() and input_dir != 0.0:
+		if ground_jump_available and coyote_timer > 0.0:
+			_execute_jump(false)
+		elif wall_climb_unlocked and is_on_wall_only() and input_dir != 0.0:
 			_execute_wall_jump()
 		elif jumps_left > 0:
-			_execute_jump()
+			_execute_jump(true)
 
-func _execute_jump() -> void:
+func _execute_jump(uses_air_jump: bool) -> void:
 	velocity.y = initial_jump_velocity
 	coyote_timer = 0.0
 	jump_buffer_timer = 0.0
-	jumps_left -= 1
+	ground_jump_available = false
+	is_climbing = false
+	if uses_air_jump:
+		jumps_left -= 1
 
 func _execute_wall_jump() -> void:
 	var wall_normal: float = get_wall_normal().x
@@ -322,18 +373,22 @@ func _execute_wall_jump() -> void:
 	velocity.y = wall_jump_impulse.y
 	jump_buffer_timer = 0.0
 	wall_jump_timer = wall_jump_control_lock
-	jumps_left = max_jumps - 1
+	jumps_left = _air_jumps_available()
 	coyote_timer = 0.0
+	ground_jump_available = false
+	is_climbing = false
 
 func _handle_wall_interactions(input_dir: float, climb_input: float) -> void:
-	if is_on_wall_only() and velocity.y > 0.0:
+	is_climbing = false
+	if wall_climb_unlocked and is_on_wall_only():
 		if Input.is_action_pressed("climb"):
+			is_climbing = true
 			velocity.y = climb_input * wall_climb_speed
-		elif input_dir == -get_wall_normal().x:
+		elif velocity.y > 0.0 and input_dir == -get_wall_normal().x:
 			velocity.y = minf(velocity.y, wall_slide_speed)
 
 func _handle_dash_input() -> void:
-	if Input.is_action_just_pressed("dash") and dash_cooldown_timer <= 0.0 and not is_dashing:
+	if dash_unlocked and Input.is_action_just_pressed("dash") and dash_cooldown_timer <= 0.0 and not is_dashing:
 		var raw_dir: Vector2 = Vector2(
 			Input.get_axis("move_left", "move_right"),
 			Input.get_axis("move_up", "move_down")
@@ -345,6 +400,7 @@ func _handle_dash_input() -> void:
 			dash_direction = Vector2(_get_current_facing_direction(), 0.0)
 
 		is_dashing = true
+		dash_start_vertical_velocity = velocity.y
 		dash_timer = dash_duration
 		dash_cooldown_timer = dash_cooldown
 
@@ -352,8 +408,8 @@ func _process_dash(delta: float) -> void:
 	dash_timer -= delta
 	velocity = dash_direction * dash_speed
 	
-	if not dash_preserve_vertical and dash_direction.y == 0.0:
-		velocity.y = 0.0
+	if dash_preserve_vertical and is_zero_approx(dash_direction.y):
+		velocity.y = dash_start_vertical_velocity
 		
 	if dash_timer <= 0.0:
 		is_dashing = false
