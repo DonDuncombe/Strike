@@ -107,6 +107,7 @@ func _ready() -> void:
 	jumps_left = _air_jumps_available()
 	_setup_sprite_reference()
 	_init_state_machine()
+	_update_animation()
 
 func _setup_sprite_reference() -> void:
 	if sprite != null:
@@ -224,6 +225,7 @@ func _physics_process(delta: float) -> void:
 		_update_sprite_facing(dash_direction.x)
 		move_and_slide()
 		_process_state_transitions()
+		_update_animation()
 		return
 
 	_handle_ground_state()
@@ -233,6 +235,7 @@ func _physics_process(delta: float) -> void:
 		_update_sprite_facing(dash_direction.x)
 		move_and_slide()
 		_process_state_transitions()
+		_update_animation()
 		return
 	if Input.is_action_just_pressed("move_jump"):
 		jump_buffer_timer = jump_buffer_time
@@ -256,6 +259,7 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 	_recover_stamina(delta)
 	_process_state_transitions()
+	_update_animation()
 
 func _process_state_transitions() -> void:
 	if is_climbing and is_on_wall_only() and not is_dashing:
@@ -347,7 +351,7 @@ func _cond_dash_ended_wall_slide() -> bool:
 # --- Physics & Core Handlers ---
 
 func _resolve_facing(input_dir: float) -> void:
-	if is_on_wall_only() and velocity.y > 0.0:
+	if is_climbing and is_on_wall_only():
 		_update_sprite_facing(-get_wall_normal().x)
 	elif wall_jump_timer > 0.0:
 		_update_sprite_facing(velocity.x)
@@ -366,6 +370,34 @@ func _update_sprite_facing(facing_dir: float) -> void:
 		(sprite as AnimatedSprite2D).flip_h = (target_sign < 0.0)
 	else:
 		sprite.scale.x = absf(sprite.scale.x) * target_sign
+
+# The supplied sheets contain walk and climb cycles; other states use still poses.
+func _update_animation() -> void:
+	if not sprite is AnimatedSprite2D:
+		return
+	var animated_sprite: AnimatedSprite2D = sprite as AnimatedSprite2D
+	var animation_name: StringName = &"idle"
+	var playback_speed: float = 1.0
+	var hold_pose: bool = false
+	match current_state:
+		PlayerState.RUN:
+			animation_name = &"run"
+			playback_speed = absf(velocity.x) / maxf(move_speed, 1.0)
+		PlayerState.JUMP:
+			animation_name = &"jump"
+		PlayerState.FALL:
+			animation_name = &"fall"
+		PlayerState.DASH:
+			animation_name = &"dash"
+		PlayerState.WALL_CLIMB, PlayerState.WALL_SLIDE, PlayerState.WALL_HOLD, PlayerState.WALL_REPOSITION:
+			animation_name = &"climb"
+			playback_speed = -velocity.y / maxf(wall_climb_speed, 1.0)
+			hold_pose = is_zero_approx(velocity.y) or current_state == PlayerState.WALL_REPOSITION
+	if animated_sprite.sprite_frames == null or not animated_sprite.sprite_frames.has_animation(animation_name):
+		return
+	animated_sprite.play(animation_name, playback_speed)
+	if hold_pose:
+		animated_sprite.pause()
 
 func _get_current_facing_direction() -> float:
 	if sprite == null:
@@ -471,7 +503,6 @@ func _handle_wall_interactions(input_dir: float, climb_input: float, delta: floa
 	if _wall_jump_origin_normal * wall_normal < 0.0:
 		wall_reposition_timer = maxf(0.0, wall_reposition_duration)
 		_wall_jump_origin_normal = 0.0
-		# TODO: Play the wall repositioning animation during WALL_REPOSITION.
 		# Start on arrival, not takeoff; allow holding/sliding but block upward climbing.
 	# Normals point away from either wall: positive product means away input.
 	if input_dir * wall_normal > 0.0:
