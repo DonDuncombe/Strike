@@ -2,7 +2,6 @@
 
 [ext_resource type="PackedScene" uid="uid://dqb7bb84gw7hh" path="res://scenes/player.tscn" id="1_o5qli"]
 [ext_resource type="Texture2D" uid="uid://db8i5dd0vnqd0" path="res://icon.svg" id="2_0wfyh"]
-[ext_resource type="Script" uid="uid://df0wy7773xk8u" path="res://scripts/player.gd" id="2_jyhfs"]
 [ext_resource type="Texture2D" uid="uid://bteb3hyswpkcv" path="res://assets/images/Tiles/collision_tile.tres" id="5_tbgi4"]
 [ext_resource type="PackedScene" path="res://scenes/hud.tscn" id="6_hud"]
 
@@ -29,17 +28,16 @@ player = NodePath("../Player")
 
 [node name="Player" parent="." unique_id=2061209260 instance=ExtResource("1_o5qli")]
 position = Vector2(356, 57)
-script = ExtResource("2_jyhfs")
 dash_unlocked = true
 double_jump_unlocked = true
 wall_climb_unlocked = true
-wall_climb_speed = 300.0
+wall_climb_speed = 150.0
 wall_jump_impulse = Vector2(250, -800)
 wall_jump_input_grace = 0.4
 dash_speed = 1000.0
 
 [node name="StaticBody2D" type="StaticBody2D" parent="." unique_id=2109793010]
-position = Vector2(583, 277)
+position = Vector2(584, 313)
 metadata/_edit_group_ = true
 
 [node name="Sprite2D" type="Sprite2D" parent="StaticBody2D" unique_id=1765378173]

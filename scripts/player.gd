@@ -511,12 +511,9 @@ func _handle_wall_interactions(input_dir: float, climb_input: float, delta: floa
 		else:
 			_release_wall(true)
 		return true
-	if climb_input > 0.0:
-		_release_wall(false)
-		return true
 	var holding: bool = input_dir * wall_normal < 0.0
-	var climbing: bool = climb_input < 0.0
-	if not holding and not climbing:
+	var climbing: bool = climb_input != 0.0
+	if not was_climbing and not holding and not climbing:
 		return false
 	stamina -= maxf(0.0, wall_stamina_drain) * delta
 	if stamina <= 0.0:
@@ -524,7 +521,7 @@ func _handle_wall_interactions(input_dir: float, climb_input: float, delta: floa
 		return true
 	is_climbing = true
 	var tired: bool = stamina < wall_low_stamina_threshold
-	if climbing and wall_reposition_timer <= 0.0:
+	if climbing and (climb_input > 0.0 or wall_reposition_timer <= 0.0):
 		velocity.y = climb_input * wall_climb_speed * get_stamina_speed_multiplier()
 		if tired:
 			velocity.y *= clampf(wall_tired_climb_multiplier, 0.0, 1.0)

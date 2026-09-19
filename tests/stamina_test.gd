@@ -115,6 +115,11 @@ func _run() -> void:
 			await _frames(10)
 			_check(player.is_climbing, "Wall test must start attached")
 			Input.action_release(toward)
+			var held_position: Vector2 = player.position
+			var before_hold: float = player.stamina
+			await _frames(5)
+			_check(player.is_climbing and player.position.is_equal_approx(held_position), "Neutral input must hold position on either wall")
+			_check(player.stamina < before_hold, "Neutral holding must drain stamina")
 			if action == "down":
 				Input.action_press("move_down")
 			else:
@@ -123,11 +128,18 @@ func _run() -> void:
 					Input.action_press("move_jump")
 			var before_release: float = player.stamina
 			await _frames(2)
-			_check(not player.is_climbing, "Release action must detach")
-			_check(is_equal_approx(player.stamina, before_release), "Detaching must not drain stamina")
 			if action == "down":
-				_check(is_zero_approx(player.velocity.x) and player.velocity.y > 0.0, "Down must drop vertically")
+				_check(player.is_climbing and player.is_on_wall_only() and player.position.y > held_position.y, "Down must descend while attached")
+				_check(player.stamina < before_release, "Downward climbing must drain stamina")
+				_check(is_equal_approx(player.velocity.y, player.wall_climb_speed * player.get_stamina_speed_multiplier()), "Downward climb speed must scale with stamina")
+				Input.action_release("move_down")
+				await _frames(2)
+				held_position = player.position
+				await _frames(5)
+				_check(player.is_climbing and player.position.distance_to(held_position) < 0.01 and is_zero_approx(player.velocity.y), "Releasing down must stop and hold the wall: %s -> %s, velocity %s" % [held_position, player.position, player.velocity])
 			else:
+				_check(not player.is_climbing, "Release action must detach")
+				_check(is_equal_approx(player.stamina, before_release), "Detaching must not drain stamina")
 				_check(player.velocity.x * side < 0.0, "Away impulse must point away on both walls")
 				_check(player.velocity.y < 0.0 if action == "jump" else player.velocity.y > 0.0, "Wall push vertical direction")
 			Input.action_release(away)
