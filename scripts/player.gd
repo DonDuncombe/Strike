@@ -8,7 +8,7 @@ signal ability_changed(ability: StringName, unlocked: bool)
 signal stamina_changed(value: float)
 signal stamina_exhausted()
 
-enum PlayerState { IDLE, RUN, JUMP, FALL, DASH, WALL_SLIDE, WALL_HOLD, WALL_CLIMB, WALL_REPOSITION }
+enum PlayerState { IDLE, WALK, JUMP, FALL, DASH, WALL_SLIDE, WALL_HOLD, WALL_CLIMB, WALL_REPOSITION }
 
 @export_category("Node References")
 @export var sprite: Node2D
@@ -19,6 +19,12 @@ enum PlayerState { IDLE, RUN, JUMP, FALL, DASH, WALL_SLIDE, WALL_HOLD, WALL_CLIM
 @export var friction: float = 1600.0
 @export var air_acceleration: float = 800.0
 @export var air_resistance: float = 300.0
+
+@export_category("Animation Travel")
+## Source-image pixels traveled over one animation cycle (11 walk frames or 25 climb frames).
+## Tune these to match planted feet/hands; world sprite scale is applied automatically.
+@export_range(1.0, 2000.0, 1.0) var walk_cycle_distance: float = 300.0
+@export_range(1.0, 2000.0, 1.0) var climb_cycle_distance: float = 400.0
 
 @export_category("Stamina")
 ## Stamina percentage. Also sets the starting stamina in the Inspector.
@@ -99,6 +105,9 @@ var ground_jump_available: bool = false
 var is_climbing: bool = false
 var dash_start_vertical_velocity: float = 0.0
 
+var _animation_cycle: float = 0.0
+var _animation_travel: Vector2 = Vector2.ZERO
+
 var current_state: PlayerState = PlayerState.IDLE
 var _state_transitions: Dictionary = {}
 
@@ -173,9 +182,9 @@ func _init_state_machine() -> void:
 			{"target": PlayerState.WALL_SLIDE, "condition": Callable(self, "_cond_is_wall_sliding")},
 			{"target": PlayerState.JUMP, "condition": Callable(self, "_cond_is_jumping")},
 			{"target": PlayerState.FALL, "condition": Callable(self, "_cond_is_falling")},
-			{"target": PlayerState.RUN, "condition": Callable(self, "_cond_is_running")}
+			{"target": PlayerState.WALK, "condition": Callable(self, "_cond_is_walking")}
 		],
-		PlayerState.RUN: [
+		PlayerState.WALK: [
 			{"target": PlayerState.DASH, "condition": Callable(self, "_cond_is_dashing")},
 			{"target": PlayerState.WALL_SLIDE, "condition": Callable(self, "_cond_is_wall_sliding")},
 			{"target": PlayerState.JUMP, "condition": Callable(self, "_cond_is_jumping")},
@@ -186,28 +195,28 @@ func _init_state_machine() -> void:
 			{"target": PlayerState.DASH, "condition": Callable(self, "_cond_is_dashing")},
 			{"target": PlayerState.WALL_SLIDE, "condition": Callable(self, "_cond_is_wall_sliding")},
 			{"target": PlayerState.FALL, "condition": Callable(self, "_cond_is_falling")},
-			{"target": PlayerState.RUN, "condition": Callable(self, "_cond_is_grounded_running")},
+			{"target": PlayerState.WALK, "condition": Callable(self, "_cond_is_grounded_walking")},
 			{"target": PlayerState.IDLE, "condition": Callable(self, "_cond_is_idle")}
 		],
 		PlayerState.FALL: [
 			{"target": PlayerState.DASH, "condition": Callable(self, "_cond_is_dashing")},
 			{"target": PlayerState.WALL_SLIDE, "condition": Callable(self, "_cond_is_wall_sliding")},
 			{"target": PlayerState.JUMP, "condition": Callable(self, "_cond_is_jumping")},
-			{"target": PlayerState.RUN, "condition": Callable(self, "_cond_is_grounded_running")},
+			{"target": PlayerState.WALK, "condition": Callable(self, "_cond_is_grounded_walking")},
 			{"target": PlayerState.IDLE, "condition": Callable(self, "_cond_is_idle")}
 		],
 		PlayerState.DASH: [
 			{"target": PlayerState.WALL_SLIDE, "condition": Callable(self, "_cond_dash_ended_wall_slide")},
 			{"target": PlayerState.JUMP, "condition": Callable(self, "_cond_dash_ended_jumping")},
 			{"target": PlayerState.FALL, "condition": Callable(self, "_cond_dash_ended_falling")},
-			{"target": PlayerState.RUN, "condition": Callable(self, "_cond_dash_ended_running")},
+			{"target": PlayerState.WALK, "condition": Callable(self, "_cond_dash_ended_walking")},
 			{"target": PlayerState.IDLE, "condition": Callable(self, "_cond_dash_ended_idle")}
 		],
 		PlayerState.WALL_SLIDE: [
 			{"target": PlayerState.DASH, "condition": Callable(self, "_cond_is_dashing")},
 			{"target": PlayerState.JUMP, "condition": Callable(self, "_cond_is_jumping")},
 			{"target": PlayerState.FALL, "condition": Callable(self, "_cond_not_wall_sliding")},
-			{"target": PlayerState.RUN, "condition": Callable(self, "_cond_is_grounded_running")},
+			{"target": PlayerState.WALK, "condition": Callable(self, "_cond_is_grounded_walking")},
 			{"target": PlayerState.IDLE, "condition": Callable(self, "_cond_is_idle")}
 		]
 	}
@@ -223,7 +232,7 @@ func _physics_process(delta: float) -> void:
 	if is_dashing:
 		_process_dash(delta)
 		_update_sprite_facing(dash_direction.x)
-		move_and_slide()
+		_move_with_animation_travel()
 		_process_state_transitions()
 		_update_animation()
 		return
@@ -233,7 +242,7 @@ func _physics_process(delta: float) -> void:
 	if is_dashing:
 		_process_dash(delta)
 		_update_sprite_facing(dash_direction.x)
-		move_and_slide()
+		_move_with_animation_travel()
 		_process_state_transitions()
 		_update_animation()
 		return
@@ -256,7 +265,7 @@ func _physics_process(delta: float) -> void:
 	
 	_resolve_facing(cached_input_dir)
 
-	move_and_slide()
+	_move_with_animation_travel()
 	_recover_stamina(delta)
 	_process_state_transitions()
 	_update_animation()
@@ -276,7 +285,7 @@ func _process_state_transitions() -> void:
 		if is_dashing:
 			_transition_to_state(PlayerState.DASH)
 		elif is_on_floor():
-			_transition_to_state(PlayerState.RUN if absf(velocity.x) > 0.0 else PlayerState.IDLE)
+			_transition_to_state(PlayerState.WALK if absf(velocity.x) > 0.0 else PlayerState.IDLE)
 		else:
 			_transition_to_state(PlayerState.JUMP if velocity.y < 0.0 else PlayerState.FALL)
 		return
@@ -324,10 +333,10 @@ func _cond_is_jumping() -> bool:
 func _cond_is_falling() -> bool:
 	return not is_on_floor() and velocity.y >= 0.0 and not is_dashing
 
-func _cond_is_running() -> bool:
+func _cond_is_walking() -> bool:
 	return is_on_floor() and (cached_input_dir != 0.0 or velocity.x != 0.0)
 
-func _cond_is_grounded_running() -> bool:
+func _cond_is_grounded_walking() -> bool:
 	return is_on_floor() and cached_input_dir != 0.0
 
 func _cond_is_idle() -> bool:
@@ -336,7 +345,7 @@ func _cond_is_idle() -> bool:
 func _cond_dash_ended_idle() -> bool:
 	return not is_dashing and is_on_floor() and cached_input_dir == 0.0
 
-func _cond_dash_ended_running() -> bool:
+func _cond_dash_ended_walking() -> bool:
 	return not is_dashing and is_on_floor() and cached_input_dir != 0.0
 
 func _cond_dash_ended_jumping() -> bool:
@@ -371,18 +380,29 @@ func _update_sprite_facing(facing_dir: float) -> void:
 	else:
 		sprite.scale.x = absf(sprite.scale.x) * target_sign
 
-# The supplied sheets contain walk and climb cycles; other states use still poses.
+# Capture only this physics move, excluding teleports between ticks.
+func _move_with_animation_travel() -> void:
+	var before_move: Vector2 = global_position
+	move_and_slide()
+	_animation_travel = global_position - before_move
+
+# Locomotion is distance-driven: FPS and speed_scale do not control its cadence.
 func _update_animation() -> void:
+	var travel: Vector2 = _animation_travel
+	_animation_travel = Vector2.ZERO
 	if not sprite is AnimatedSprite2D:
 		return
 	var animated_sprite: AnimatedSprite2D = sprite as AnimatedSprite2D
 	var animation_name: StringName = &"idle"
-	var playback_speed: float = 1.0
-	var hold_pose: bool = false
+	var cycle_advance: float = 0.0
+	var distance_driven: bool = false
 	match current_state:
-		PlayerState.RUN:
-			animation_name = &"run"
-			playback_speed = absf(velocity.x) / maxf(move_speed, 1.0)
+		PlayerState.WALK:
+			animation_name = &"walk"
+			distance_driven = true
+			var cycle_distance: float = walk_cycle_distance * animated_sprite.global_transform.x.length()
+			if absf(travel.x) > 0.001:
+				cycle_advance = absf(travel.x) / maxf(cycle_distance, 0.001)
 		PlayerState.JUMP:
 			animation_name = &"jump"
 		PlayerState.FALL:
@@ -391,13 +411,37 @@ func _update_animation() -> void:
 			animation_name = &"dash"
 		PlayerState.WALL_CLIMB, PlayerState.WALL_SLIDE, PlayerState.WALL_HOLD, PlayerState.WALL_REPOSITION:
 			animation_name = &"climb"
-			playback_speed = -velocity.y / maxf(wall_climb_speed, 1.0)
-			hold_pose = is_zero_approx(velocity.y) or current_state == PlayerState.WALL_REPOSITION
+			distance_driven = true
+			var cycle_distance: float = climb_cycle_distance * animated_sprite.global_transform.y.length()
+			# Tired slipping keeps the grip pose; intentional descent reverses the cycle.
+			if is_climbing and Input.get_axis("move_up", "move_down") != 0.0 and absf(travel.y) > 0.001:
+				cycle_advance = -travel.y / maxf(cycle_distance, 0.001)
 	if animated_sprite.sprite_frames == null or not animated_sprite.sprite_frames.has_animation(animation_name):
 		return
-	animated_sprite.play(animation_name, playback_speed)
-	if hold_pose:
+	if animated_sprite.animation != animation_name:
+		_animation_cycle = 0.0
+		animated_sprite.animation = animation_name
+	if distance_driven:
 		animated_sprite.pause()
+		_animation_cycle = fposmod(_animation_cycle + cycle_advance, 1.0)
+		_set_locomotion_frame(animated_sprite)
+	else:
+		animated_sprite.play(animation_name)
+
+func _set_locomotion_frame(animated_sprite: AnimatedSprite2D) -> void:
+	var frames: SpriteFrames = animated_sprite.sprite_frames
+	var animation_name: StringName = animated_sprite.animation
+	var frame_count: int = frames.get_frame_count(animation_name)
+	var total_duration: float = 0.0
+	for index: int in range(frame_count):
+		total_duration += frames.get_frame_duration(animation_name, index)
+	var remaining: float = _animation_cycle * total_duration
+	for index: int in range(frame_count):
+		var duration: float = frames.get_frame_duration(animation_name, index)
+		if remaining < duration or index == frame_count - 1:
+			animated_sprite.set_frame_and_progress(index, remaining / maxf(duration, 0.001))
+			return
+		remaining -= duration
 
 func _get_current_facing_direction() -> float:
 	if sprite == null:

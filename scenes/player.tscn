@@ -184,76 +184,6 @@ atlas = ExtResource("walk")
 region = Rect2(0, 512, 256, 256)
 filter_clip = true
 
-[sub_resource type="AtlasTexture" id="walk_11"]
-atlas = ExtResource("walk")
-region = Rect2(256, 512, 256, 256)
-filter_clip = true
-
-[sub_resource type="AtlasTexture" id="walk_12"]
-atlas = ExtResource("walk")
-region = Rect2(512, 512, 256, 256)
-filter_clip = true
-
-[sub_resource type="AtlasTexture" id="walk_13"]
-atlas = ExtResource("walk")
-region = Rect2(768, 512, 256, 256)
-filter_clip = true
-
-[sub_resource type="AtlasTexture" id="walk_14"]
-atlas = ExtResource("walk")
-region = Rect2(1024, 512, 256, 256)
-filter_clip = true
-
-[sub_resource type="AtlasTexture" id="walk_15"]
-atlas = ExtResource("walk")
-region = Rect2(0, 768, 256, 256)
-filter_clip = true
-
-[sub_resource type="AtlasTexture" id="walk_16"]
-atlas = ExtResource("walk")
-region = Rect2(256, 768, 256, 256)
-filter_clip = true
-
-[sub_resource type="AtlasTexture" id="walk_17"]
-atlas = ExtResource("walk")
-region = Rect2(512, 768, 256, 256)
-filter_clip = true
-
-[sub_resource type="AtlasTexture" id="walk_18"]
-atlas = ExtResource("walk")
-region = Rect2(768, 768, 256, 256)
-filter_clip = true
-
-[sub_resource type="AtlasTexture" id="walk_19"]
-atlas = ExtResource("walk")
-region = Rect2(1024, 768, 256, 256)
-filter_clip = true
-
-[sub_resource type="AtlasTexture" id="walk_20"]
-atlas = ExtResource("walk")
-region = Rect2(0, 1024, 256, 256)
-filter_clip = true
-
-[sub_resource type="AtlasTexture" id="walk_21"]
-atlas = ExtResource("walk")
-region = Rect2(256, 1024, 256, 256)
-filter_clip = true
-
-[sub_resource type="AtlasTexture" id="walk_22"]
-atlas = ExtResource("walk")
-region = Rect2(512, 1024, 256, 256)
-filter_clip = true
-
-[sub_resource type="AtlasTexture" id="walk_23"]
-atlas = ExtResource("walk")
-region = Rect2(768, 1024, 256, 256)
-filter_clip = true
-
-[sub_resource type="AtlasTexture" id="walk_24"]
-atlas = ExtResource("walk")
-region = Rect2(1024, 1024, 256, 256)
-filter_clip = true
-
 [sub_resource type="SpriteFrames" id="SpriteFrames_u4gc1"]
 animations = [{
 "frames": [{
@@ -401,51 +331,9 @@ animations = [{
 }, {
 "duration": 1.0,
 "texture": SubResource("walk_10")
-}, {
-"duration": 1.0,
-"texture": SubResource("walk_11")
-}, {
-"duration": 1.0,
-"texture": SubResource("walk_12")
-}, {
-"duration": 1.0,
-"texture": SubResource("walk_13")
-}, {
-"duration": 1.0,
-"texture": SubResource("walk_14")
-}, {
-"duration": 1.0,
-"texture": SubResource("walk_15")
-}, {
-"duration": 1.0,
-"texture": SubResource("walk_16")
-}, {
-"duration": 1.0,
-"texture": SubResource("walk_17")
-}, {
-"duration": 1.0,
-"texture": SubResource("walk_18")
-}, {
-"duration": 1.0,
-"texture": SubResource("walk_19")
-}, {
-"duration": 1.0,
-"texture": SubResource("walk_20")
-}, {
-"duration": 1.0,
-"texture": SubResource("walk_21")
-}, {
-"duration": 1.0,
-"texture": SubResource("walk_22")
-}, {
-"duration": 1.0,
-"texture": SubResource("walk_23")
-}, {
-"duration": 1.0,
-"texture": SubResource("walk_24")
 }],
 "loop": 1,
-"name": &"run",
+"name": &"walk",
 "speed": 10.0
 }]
 
