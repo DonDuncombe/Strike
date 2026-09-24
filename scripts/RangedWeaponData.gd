@@ -1,8 +1,11 @@
 class_name RangedWeaponData
 extends WeaponData
 
+## Scene to spawn when firing. Its root must use the Projectile script.
 @export var projectile_scene: PackedScene
+## Projectile spawn offset from the player in world pixels. X is mirrored with horizontal firing direction; Y remains a vertical offset.
 @export var spawn_offset: Vector2 = Vector2(16.0, 0.0)
+## Speed in world pixels per second assigned to each spawned projectile. Overrides the projectile scene speed.
 @export var projectile_speed: float = 600.0
 
 func _on_execute(user: CharacterBody2D, fire_direction: Vector2) -> void:

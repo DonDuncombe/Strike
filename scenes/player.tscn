@@ -3,6 +3,22 @@
 [ext_resource type="Script" uid="uid://df0wy7773xk8u" path="res://scripts/player.gd" id="1_player"]
 [ext_resource type="Texture2D" uid="uid://b2dl3tw4bp2tg" path="res://assets/images/Skelly/Skelly-climb.png" id="climb"]
 [ext_resource type="Texture2D" uid="uid://8acy4ho2nom4" path="res://assets/images/Skelly/Skelly-walk.png" id="walk"]
+[ext_resource type="Texture2D" path="res://assets/images/Skelly/Skelly-hang.png" id="hang"]
+
+[sub_resource type="AtlasTexture" id="hang_0"]
+atlas = ExtResource("hang")
+region = Rect2(0, 0, 128, 128)
+filter_clip = true
+
+[sub_resource type="AtlasTexture" id="hang_1"]
+atlas = ExtResource("hang")
+region = Rect2(128, 0, 128, 128)
+filter_clip = true
+
+[sub_resource type="AtlasTexture" id="hang_2"]
+atlas = ExtResource("hang")
+region = Rect2(256, 0, 128, 128)
+filter_clip = true
 
 [sub_resource type="AtlasTexture" id="climb_0"]
 atlas = ExtResource("climb")
@@ -284,6 +300,20 @@ animations = [{
 }, {
 "frames": [{
 "duration": 1.0,
+"texture": SubResource("hang_0")
+}, {
+"duration": 1.0,
+"texture": SubResource("hang_1")
+}, {
+"duration": 1.0,
+"texture": SubResource("hang_2")
+}],
+"loop": 1,
+"name": &"hang",
+"speed": 5.0
+}, {
+"frames": [{
+"duration": 1.0,
 "texture": SubResource("walk_3")
 }],
 "loop": 1,
@@ -348,10 +378,8 @@ texture_filter = 2
 position = Vector2(0.99999994, 13)
 scale = Vector2(0.42, 0.42)
 sprite_frames = SubResource("SpriteFrames_u4gc1")
-animation = &"climb"
+animation = &"idle"
 autoplay = "idle"
-frame = 9
-frame_progress = 0.7356001
 metadata/_edit_group_ = true
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="." unique_id=1452470579]

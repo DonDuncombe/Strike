@@ -1,56 +1,58 @@
-[gd_scene format=3]
+[gd_scene format=3 uid="uid://cdxtonmekdfsm"]
 
-[ext_resource type="Script" path="res://scripts/hud.gd" id="1_hud"]
+[ext_resource type="Script" uid="uid://cd2ravp5mkkey" path="res://scripts/hud.gd" id="1_hud"]
 
 [sub_resource type="StyleBoxFlat" id="Style_panel"]
 bg_color = Color(0.035, 0.055, 0.085, 0.92)
 corner_radius_top_left = 8
 corner_radius_top_right = 8
-corner_radius_bottom_left = 8
 corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
 
 [sub_resource type="StyleBoxFlat" id="Style_track"]
-bg_color = Color(0.16, 0.20, 0.25, 1)
+bg_color = Color(0.16, 0.2, 0.25, 1)
 corner_radius_top_left = 4
 corner_radius_top_right = 4
-corner_radius_bottom_left = 4
 corner_radius_bottom_right = 4
+corner_radius_bottom_left = 4
 
 [sub_resource type="StyleBoxFlat" id="Style_fill"]
 resource_local_to_scene = true
-bg_color = Color(0.322, 0.839, 0.420, 1)
+bg_color = Color(0.322, 0.839, 0.42, 1)
 corner_radius_top_left = 4
 corner_radius_top_right = 4
-corner_radius_bottom_left = 4
 corner_radius_bottom_right = 4
+corner_radius_bottom_left = 4
 
-[node name="HUD" type="CanvasLayer"]
+[node name="HUD" type="CanvasLayer" unique_id=665848235]
 layer = 10
 script = ExtResource("1_hud")
 
-[node name="Panel" type="Panel" parent="."]
-offset_left = 20.0
-offset_top = 20.0
-offset_right = 300.0
-offset_bottom = 96.0
+[node name="Panel" type="Panel" parent="." unique_id=2145418160]
+offset_left = 5.0
+offset_top = 4.0
+offset_right = 422.0
+offset_bottom = 47.0
 mouse_filter = 2
 theme_override_styles/panel = SubResource("Style_panel")
+metadata/_edit_group_ = true
 
-[node name="StaminaLabel" type="Label" parent="Panel"]
-offset_left = 16.0
-offset_top = 10.0
-offset_right = 264.0
-offset_bottom = 34.0
-mouse_filter = 2
+[node name="StaminaLabel" type="Label" parent="Panel" unique_id=796037799]
+layout_mode = 0
+offset_left = 20.0
+offset_top = 11.0
+offset_right = 268.0
+offset_bottom = 35.0
 theme_override_colors/font_color = Color(0.94, 0.97, 1, 1)
 theme_override_font_sizes/font_size = 16
 text = "STAMINA  100%"
 
-[node name="StaminaBar" type="ProgressBar" parent="Panel"]
-offset_left = 16.0
-offset_top = 44.0
-offset_right = 264.0
-offset_bottom = 60.0
+[node name="StaminaBar" type="ProgressBar" parent="Panel" unique_id=1841554602]
+layout_mode = 0
+offset_left = 152.0
+offset_top = 20.0
+offset_right = 400.0
+offset_bottom = 24.0
 mouse_filter = 2
 theme_override_styles/background = SubResource("Style_track")
 theme_override_styles/fill = SubResource("Style_fill")

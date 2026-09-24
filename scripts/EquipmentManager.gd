@@ -2,9 +2,13 @@ class_name EquipmentManager
 extends Node2D
 
 @export_category("References")
+## Player whose weapon signals and facing drive this equipment. Leave empty to use the parent PlayerController.
 @export var player: PlayerController
+## Node that holds the weapon visuals. Its horizontal scale is mirrored to follow the player facing direction.
 @export var weapon_anchor: Node2D
+## Sprite used to display the active weapon texture when the weapon resource provides one.
 @export var weapon_sprite: Sprite2D
+## AnimationPlayer for attack, attack_melee and attack_ranged animations. Assign to enable weapon attack visuals.
 @export var animation_player: AnimationPlayer
 
 var current_weapon: WeaponData = null

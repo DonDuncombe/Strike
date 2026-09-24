@@ -1,7 +1,9 @@
 class_name Projectile
 extends Area2D
 
+## Projectile travel speed in world pixels per second. Ranged weapon resources override this when spawning a projectile.
 @export var speed: float = 600.0
+## Seconds before the projectile removes itself if it has not collided. Increase for longer travel range.
 @export var max_lifetime: float = 3.0
 
 var direction: Vector2 = Vector2.RIGHT

@@ -1,8 +1,11 @@
 class_name MeleeWeaponData
 extends WeaponData
 
+## Radius of the melee hit circle in world pixels. Its center is placed half this distance ahead of the player.
 @export var attack_range: float = 40.0
+## Reserved setting; currently unused. Melee attacks use a circle query, so changing this does not restrict the hit arc.
 @export var attack_arc_degrees: float = 90.0
+## Physics layers that melee attacks can hit, including bodies and areas. Enable the layers used by damageable targets.
 @export_flags_2d_physics var target_collision_mask: int = 1
 
 func _on_execute(user: CharacterBody2D, fire_direction: Vector2) -> void:

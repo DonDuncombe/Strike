@@ -4,8 +4,11 @@ extends Resource
 signal weapon_fired()
 signal cooldown_started(duration: float)
 
+## Display name identifying this weapon resource. Also used in missing-projectile error messages.
 @export var weapon_name: String = "Default Weapon"
+## Minimum seconds between uses of this weapon. Increase to slow its attack rate.
 @export var cooldown_time: float = 0.5
+## Damage value passed to a target take_damage method on a successful hit. Increase for stronger attacks.
 @export var damage: float = 10.0
 
 var _current_cooldown: float = 0.0

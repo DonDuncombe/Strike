@@ -1,5 +1,6 @@
 extends CanvasLayer
 
+## Player whose stamina is shown by this HUD. Assign the Player node; the HUD hides itself when this is empty.
 @export var player: PlayerController
 
 const STAMINA_GREEN: Color = Color("52d66b")
