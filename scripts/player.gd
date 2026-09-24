@@ -337,7 +337,7 @@ func _physics_process(delta: float) -> void:
 		return
 	if Input.is_action_just_pressed("move_jump"):
 		jump_buffer_timer = jump_buffer_time
-		if wall_climb_unlocked and stamina > 0.0 and is_on_wall_only():
+		if wall_climb_unlocked and stamina > 0.0 and is_on_wall_only() and _wall_is_tall_enough():
 			_wall_jump_input_timer = maxf(0.0, wall_jump_input_grace)
 	# Upgrade a recent downward push-off to a wall jump, even after losing contact.
 	var late_wall_jump: bool = (
@@ -364,6 +364,11 @@ func _is_on_ledge() -> bool:
 
 func _ledge_bounds() -> Rect2:
 	var collision: CollisionShape2D = get_node_or_null("CollisionShape2D") as CollisionShape2D
+	if collision == null:
+		for child: Node in get_children():
+			if child is CollisionShape2D and not (child as CollisionShape2D).disabled:
+				collision = child as CollisionShape2D
+				break
 	if collision == null or collision.shape == null or collision.disabled:
 		return Rect2()
 	var bounds: Rect2 = collision.global_transform * collision.shape.get_rect()
@@ -819,10 +824,49 @@ func _execute_wall_jump(saved_normal: float = 0.0) -> void:
 	ground_jump_available = false
 	is_climbing = false
 
+func _wall_height_ray(from: Vector2, to: Vector2, collider: Object) -> Dictionary:
+	var excluded: Array[RID] = [get_rid()]
+	var query: PhysicsRayQueryParameters2D = PhysicsRayQueryParameters2D.create(from, to, collision_mask, excluded)
+	query.hit_from_inside = true
+	while true:
+		var hit: Dictionary = get_world_2d().direct_space_state.intersect_ray(query)
+		if hit.is_empty() or hit.collider == collider:
+			return hit
+		# Other nearby bodies must not hide the contacted wall's top.
+		excluded.append(hit.rid)
+		query.exclude = excluded
+	return {}
+
+func _wall_is_tall_enough() -> bool:
+	var bounds: Rect2 = _ledge_bounds()
+	var height: float = bounds.size.y
+	if height <= 0.0:
+		return false
+	var feet_y: float = global_position.y + bounds.end.y
+	for index: int in range(get_slide_collision_count()):
+		var contact: KinematicCollision2D = get_slide_collision(index)
+		var normal: Vector2 = contact.get_normal()
+		if absf(normal.x) < 0.9:
+			continue
+		# Only the wall above the current feet plane counts. Start at head height;
+		# an inside hit means the wall reaches at least one character height above it.
+		var inside: Vector2 = contact.get_position() - normal * 0.1
+		var start: Vector2 = Vector2(inside.x, feet_y - height - 0.001)
+		var top: Dictionary = _wall_height_ray(start, inside, contact.get_collider())
+		if top.is_empty():
+			continue
+		var top_position: Vector2 = top.position
+		if feet_y - top_position.y >= height - 0.001:
+			return true
+	return false
+
 func _handle_wall_interactions(input_dir: float, climb_input: float, delta: float) -> bool:
 	var was_climbing: bool = is_climbing
 	is_climbing = false
 	if not wall_climb_unlocked or not is_on_wall_only() or wall_jump_timer > 0.0:
+		return false
+	if not _wall_is_tall_enough():
+		_clear_wall_jump_inputs()
 		return false
 	if stamina <= 0.0:
 		if was_climbing:

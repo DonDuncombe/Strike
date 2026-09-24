@@ -30,6 +30,7 @@ player = NodePath("../Player")
 position = Vector2(357, 123)
 air_acceleration = 2000.0
 air_resistance = 100.0
+stamina_recovery = 16.0
 
 [node name="StaticBody2D" type="StaticBody2D" parent="." unique_id=2109793010]
 position = Vector2(577, 259)
