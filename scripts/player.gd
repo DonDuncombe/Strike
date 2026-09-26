@@ -9,7 +9,19 @@ signal stamina_changed(value: float)
 signal stamina_exhausted()
 signal dash_energy_changed(value: float)
 
-enum PlayerState { IDLE, WALK, JUMP, FALL, DASH, WALL_SLIDE, WALL_HOLD, WALL_CLIMB, WALL_REPOSITION, LEDGE_HANG, LEDGE_CLIMB }
+enum PlayerState { IDLE, WALK, JUMP, FALL, DASH, WALL_SLIDE, WALL_HOLD, WALL_CLIMB, WALL_REPOSITION, LEDGE_HANG, LEDGE_CLIMB, CROUCH }
+
+## Seconds to play the crouch frames fully down or back up.
+const CROUCH_TRANSITION_TIME: float = 0.15
+## Crouched collider height as a fraction of the standing collider; the feet stay in place.
+const CROUCH_HEIGHT_RATIO: float = 0.68
+## The crouch sheet is drawn larger than the walk sheet. This matches its head size (64 vs 47 source px).
+const CROUCH_SPRITE_SCALE: float = 0.734
+## Source-pixel shift that puts the scaled crouch feet (117 px below frame center) on the walk feet (89 px).
+const CROUCH_SPRITE_FEET_SHIFT: float = 3.1
+## Crouched movement speed as a fraction of the stamina-scaled Move Speed.
+# TODO: Placeholder crouch-walk that slides the held crouch frame. Replace with the crouch-walk/crawl animation when it is added.
+const CROUCH_WALK_SPEED_MULTIPLIER: float = 0.35
 
 @export_category("Node References")
 ## Sprite used for facing and animation. Leave empty to use the AnimatedSprite2D child named AnimatedSprite2D.
@@ -94,6 +106,8 @@ enum PlayerState { IDLE, WALK, JUMP, FALL, DASH, WALL_SLIDE, WALL_HOLD, WALL_CLI
 @export_range(0.0, 100.0, 0.1) var ledge_stamina_drain: float = 5.0
 ## Seconds after releasing a ledge before another grab is allowed. Increase to avoid immediately catching the same ledge when dropping.
 @export_range(0.0, 1.0, 0.01) var ledge_regrab_delay: float = 0.25
+## Pull-up speed multiplier when Jump without an away direction starts or hurries a pull-up. 1.5 is 50 percent faster.
+@export_range(1.0, 3.0, 0.05) var ledge_jump_pull_up_multiplier: float = 1.5
 
 @export_group("Ledge Raycasting")
 ## Horizontal ray reach in world pixels beyond the player collider edge. Increase to grab from farther away; rays use the player collision mask.
@@ -134,6 +148,8 @@ enum PlayerState { IDLE, WALK, JUMP, FALL, DASH, WALL_SLIDE, WALL_HOLD, WALL_CLI
 @export_range(0.0, 5.0, 0.05, "or_greater") var wall_reposition_duration: float = 1.0
 ## Push-off velocity in pixels per second before stamina scaling. X controls outward speed and Y downward speed; magnitudes are used.
 @export var wall_drop_impulse: Vector2 = Vector2(180.0, 120.0)
+## World pixels a Down + Jump hop falls along the wall before the grip catches again. Up + Jump hops rise by the normal jump height.
+@export_range(0.0, 400.0, 1.0, "or_greater", "suffix:px") var wall_hop_down_distance: float = 90.0
 ## Stamina percentage below which holding slips and intentional climbing slows. Increase to make fatigue start earlier.
 @export_range(0.0, 100.0, 0.1) var wall_low_stamina_threshold: float = 15.0
 ## Downward slipping speed in world pixels per second while holding with low stamina. Set to 0 to keep a stationary grip until exhausted.
@@ -189,14 +205,28 @@ var ground_jump_available: bool = false
 var is_climbing: bool = false
 var dash_start_vertical_velocity: float = 0.0
 var current_state: PlayerState = PlayerState.IDLE
+var is_crouching: bool = false
+
+var _crouch_amount: float = 0.0
+var _standing_shape: RectangleShape2D
+var _standing_shape_position: Vector2
+var _crouch_shape: RectangleShape2D
+var _crouch_shape_position: Vector2
 
 var _wall_jump_origin_normal: float = 0.0
 var _wall_jump_input_timer: float = 0.0
 var _wall_away_input_timer: float = 0.0
 var _wall_away_normal: float = 0.0
+var _wall_drop_normal: float = 0.0
+# Active wall hop: -1 rising, 1 falling, 0 none.
+var _wall_hop_direction: float = 0.0
+var _wall_hop_normal: float = 0.0
+var _wall_hop_start_y: float = 0.0
 
 var _ledge_regrab_timer: float = 0.0
 var _ledge_direction: float = 0.0
+var _ledge_toward_held: bool = false
+var _ledge_climb_speed_scale: float = 1.0
 var _ledge_top: Vector2
 var _ledge_body: Node2D
 var _ledge_body_transform: Transform2D
@@ -204,7 +234,7 @@ var _ledge_waypoints: Array[Vector2] = []
 
 var _animation_cycle: float = 0.0
 var _animation_travel: Vector2 = Vector2.ZERO
-var _hang_visual_active: bool = false
+var _sprite_override_active: bool = false
 var _sprite_rest_scale: Vector2
 var _sprite_rest_position: Vector2
 
@@ -220,6 +250,7 @@ func _ready() -> void:
 	for index: int in range(inventory.size()):
 		if inventory[index] != null:
 			inventory[index] = inventory[index].duplicate() as WeaponData
+	_init_crouch_shape()
 	_init_state_machine()
 	_update_animation()
 
@@ -231,6 +262,49 @@ func _find_collision_shape() -> CollisionShape2D:
 		if child is CollisionShape2D:
 			return child as CollisionShape2D
 	return null
+
+func _init_crouch_shape() -> void:
+	if _collision_shape == null or not _collision_shape.shape is RectangleShape2D:
+		return
+	_standing_shape = _collision_shape.shape as RectangleShape2D
+	_standing_shape_position = _collision_shape.position
+	_crouch_shape = _standing_shape.duplicate() as RectangleShape2D
+	_crouch_shape.size.y = _standing_shape.size.y * CROUCH_HEIGHT_RATIO
+	# Lower the center by half the lost height so the collider bottom stays on the floor.
+	var lost_height: float = _standing_shape.size.y - _crouch_shape.size.y
+	_crouch_shape_position = _standing_shape_position + Vector2(0.0, lost_height * 0.5 * _collision_shape.scale.y)
+
+func _update_crouch(delta: float) -> void:
+	var wants_crouch: bool = (Input.is_action_pressed("move_crouch") or Input.is_action_pressed("move_down")) and is_on_floor()
+	if wants_crouch != is_crouching and (wants_crouch or _has_standing_headroom()):
+		_set_crouching(wants_crouch)
+	if not is_crouching and current_state != PlayerState.CROUCH and current_state != PlayerState.IDLE:
+		_crouch_amount = 0.0
+	_crouch_amount = move_toward(_crouch_amount, 1.0 if is_crouching else 0.0, delta / CROUCH_TRANSITION_TIME)
+
+func _set_crouching(crouching: bool) -> void:
+	is_crouching = crouching
+	if _crouch_shape == null:
+		return
+	_collision_shape.shape = _crouch_shape if crouching else _standing_shape
+	_collision_shape.position = _crouch_shape_position if crouching else _standing_shape_position
+
+# Checks the strip the standing collider adds above the crouched one, shrunk 1 px so touching walls do not count.
+func _has_standing_headroom() -> bool:
+	if _crouch_shape == null:
+		return true
+	var extra_height: float = _standing_shape.size.y - _crouch_shape.size.y
+	var strip: RectangleShape2D = RectangleShape2D.new()
+	strip.size = Vector2(maxf(_standing_shape.size.x - 2.0, 1.0), maxf(extra_height - 1.0, 1.0))
+	var shape_transform: Transform2D = _collision_shape.transform
+	shape_transform.origin = _standing_shape_position
+	var strip_center: Vector2 = Vector2(0.0, -_standing_shape.size.y * 0.5 + extra_height * 0.5)
+	var query: PhysicsShapeQueryParameters2D = PhysicsShapeQueryParameters2D.new()
+	query.shape = strip
+	query.transform = global_transform * shape_transform * Transform2D(0.0, strip_center)
+	query.collision_mask = collision_mask
+	query.exclude = [get_rid()]
+	return get_world_2d().direct_space_state.intersect_shape(query, 1).is_empty()
 
 func _recalculate_physics() -> void:
 	gravity_jump = (2.0 * jump_height) / (time_to_peak * time_to_peak)
@@ -329,6 +403,13 @@ func _init_state_machine() -> void:
 			{"target": PlayerState.FALL, "condition": _cond_not_wall_sliding},
 			{"target": PlayerState.WALK, "condition": _cond_is_grounded_walking},
 			{"target": PlayerState.IDLE, "condition": _cond_is_idle}
+		],
+		# Only checked after crouch is released; entering CROUCH is handled in _process_state_transitions.
+		PlayerState.CROUCH: [
+			{"target": PlayerState.JUMP, "condition": _cond_is_jumping},
+			{"target": PlayerState.FALL, "condition": _cond_is_falling},
+			{"target": PlayerState.WALK, "condition": _cond_is_grounded_walking},
+			{"target": PlayerState.IDLE, "condition": is_on_floor}
 		]
 	}
 
@@ -349,7 +430,9 @@ func _physics_process(delta: float) -> void:
 
 	if not is_dashing:
 		_handle_ground_state()
-		_handle_dash_input()
+		_update_crouch(delta)
+		if not is_crouching:
+			_handle_dash_input()
 	if is_dashing:
 		_dash_physics_step(delta)
 		return
@@ -364,10 +447,19 @@ func _physics_process(delta: float) -> void:
 		and wall_climb_unlocked and stamina > 0.0 and not is_on_floor()
 		and cached_input_dir * _wall_away_normal >= 0.0 and cached_climb_input <= 0.0
 	)
-	if late_wall_jump:
+	# Upgrade a recent Jump drop to a wall jump when Away follows within the grace window.
+	if (
+		not late_wall_jump and _wall_drop_normal != 0.0 and _wall_jump_input_timer > 0.0
+		and cached_input_dir * _wall_drop_normal > 0.0 and stamina > 0.0 and not is_on_floor()
+	):
+		late_wall_jump = true
+		_execute_wall_jump(_wall_drop_normal)
+	elif late_wall_jump:
 		_execute_wall_jump(_wall_away_normal)
-	_apply_horizontal_movement(cached_input_dir, delta)
-	if not late_wall_jump and not _handle_wall_interactions(cached_input_dir, cached_climb_input, delta):
+	# Crouching slows movement to a crouch-walk and blocks jumping.
+	_apply_horizontal_movement(cached_input_dir * (CROUCH_WALK_SPEED_MULTIPLIER if is_crouching else 1.0), delta)
+	_update_wall_hop()
+	if not late_wall_jump and not _handle_wall_interactions(cached_input_dir, cached_climb_input, delta) and not is_crouching:
 		_handle_jump()
 	_apply_gravity(delta)
 
@@ -444,7 +536,7 @@ func _ledge_path_clear(from: Vector2, to: Vector2) -> bool:
 	return not test_move(pose, Vector2.ZERO, null, safe_margin, true)
 
 func _try_grab_ledge() -> bool:
-	if not ledge_hang_unlocked or stamina <= 0.0 or is_dashing or is_on_floor():
+	if not ledge_hang_unlocked or stamina <= 0.0 or is_dashing or is_crouching or is_on_floor():
 		return false
 	if _ledge_regrab_timer > 0.0 or wall_jump_timer > 0.0 or Input.is_action_pressed("move_down"):
 		return false
@@ -489,6 +581,10 @@ func _try_grab_ledge() -> bool:
 	global_position = target
 	_ledge_top = corner
 	_ledge_direction = direction
+	# The grab itself usually holds toward the wall; only a fresh press toward it pulls up.
+	_ledge_toward_held = cached_input_dir * direction > 0.0
+	_ledge_climb_speed_scale = 1.0
+	_wall_hop_direction = 0.0
 	_ledge_body = body
 	_ledge_body_transform = body.global_transform
 	velocity = Vector2.ZERO
@@ -509,20 +605,53 @@ func _release_ledge() -> void:
 	velocity = Vector2.ZERO
 	_transition_to_state(PlayerState.FALL)
 
+# Pulls up standing when the body fits, otherwise into a crouch when only the crouched collider fits.
+# Lets go of the ledge onto the wall below it. Too-short walls fail the normal climbable check and the player drops instead.
+func _climb_down_from_ledge() -> void:
+	var direction: float = _ledge_direction
+	var top_y: float = _ledge_top.y
+	_release_ledge()
+	if not wall_climb_unlocked:
+		return
+	# A wall is climbable only if it reaches a full body height above the feet, so lower into that range first.
+	var bounds: Rect2 = _body_bounds()
+	var lower: float = bounds.size.y - (global_position.y + bounds.end.y - top_y) + 1.0
+	if lower > 0.0:
+		var target: Vector2 = global_position + Vector2(0.0, lower)
+		if not _ledge_path_clear(global_position, target):
+			return
+		global_position = target
+	# Step into contact so the wall grip takes over on the next frame.
+	velocity = Vector2(direction * move_speed, wall_climb_speed) * get_stamina_speed_multiplier()
+	move_and_slide()
+	is_climbing = is_on_wall_only()
+
 func _begin_ledge_climb() -> void:
+	if not _plan_ledge_climb():
+		if _crouch_shape == null or is_crouching:
+			return
+		# The crouched collider keeps the same feet and width, so the same waypoints apply.
+		_set_crouching(true)
+		if not _plan_ledge_climb():
+			_set_crouching(false)
+			return
+		_crouch_amount = 1.0
+	_transition_to_state(PlayerState.LEDGE_CLIMB)
+
+func _plan_ledge_climb() -> bool:
 	var bounds: Rect2 = _body_bounds()
 	var raised: Vector2 = Vector2(global_position.x, _ledge_top.y - bounds.end.y - ledge_clearance)
 	var inner_side: float = bounds.position.x if _ledge_direction > 0.0 else bounds.end.x
 	var standing: Vector2 = Vector2(_ledge_top.x - inner_side + _ledge_direction * ledge_clearance, raised.y)
 	if not _ledge_path_clear(global_position, raised) or not _ledge_path_clear(raised, standing):
-		return
+		return false
 	# Confirm the destination is supported, including on narrow platforms.
 	var foot: Vector2 = standing + Vector2(bounds.get_center().x, bounds.end.y)
 	var support: Dictionary = _ledge_ray(foot, foot + Vector2(0.0, ledge_support_probe_depth))
 	if support.is_empty() or support.collider != _ledge_body or not _ledge_surface_is_grabbable(support):
-		return
+		return false
 	_ledge_waypoints.assign([raised, standing])
-	_transition_to_state(PlayerState.LEDGE_CLIMB)
+	return true
 
 func _process_ledge(delta: float) -> void:
 	_animation_travel = Vector2.ZERO
@@ -533,8 +662,11 @@ func _process_ledge(delta: float) -> void:
 		_release_ledge()
 		return
 	stamina -= maxf(0.0, ledge_stamina_drain) * delta
-	if stamina <= 0.0 or Input.is_action_pressed("move_down"):
+	if stamina <= 0.0:
 		_release_ledge()
+		return
+	if Input.is_action_pressed("move_down"):
+		_climb_down_from_ledge()
 		return
 	if cached_input_dir * _ledge_direction < 0.0:
 		var jump_away: bool = Input.is_action_just_pressed("move_jump")
@@ -545,20 +677,25 @@ func _process_ledge(delta: float) -> void:
 		else:
 			_push_off_wall(-_ledge_direction)
 		return
-	if Input.is_action_just_pressed("move_jump"):
-		_release_ledge()
-		_execute_wall_jump(-_ledge_direction)
-		return
+	# Jump without an away direction pulls up faster, or hurries a pull-up already under way.
+	var jump_pressed: bool = Input.is_action_just_pressed("move_jump")
+	if jump_pressed:
+		_ledge_climb_speed_scale = maxf(1.0, ledge_jump_pull_up_multiplier)
 	_handle_dash_input()
 	if is_dashing:
 		_release_ledge()
 		_transition_to_state(PlayerState.DASH)
 		return
 	if current_state == PlayerState.LEDGE_HANG:
-		if Input.is_action_just_pressed("move_up"):
+		# Up, or a new press toward the ledge (including up-toward diagonals), pulls up.
+		var toward: bool = cached_input_dir * _ledge_direction > 0.0
+		if jump_pressed or Input.is_action_just_pressed("move_up") or (toward and not _ledge_toward_held):
+			if not jump_pressed:
+				_ledge_climb_speed_scale = 1.0
 			_begin_ledge_climb()
+		_ledge_toward_held = toward
 		return
-	var destination: Vector2 = global_position.move_toward(_ledge_waypoints[0], ledge_pull_up_speed * get_stamina_speed_multiplier() * delta)
+	var destination: Vector2 = global_position.move_toward(_ledge_waypoints[0], ledge_pull_up_speed * _ledge_climb_speed_scale * get_stamina_speed_multiplier() * delta)
 	if not _ledge_path_clear(global_position, destination):
 		_release_ledge()
 		return
@@ -570,6 +707,9 @@ func _process_ledge(delta: float) -> void:
 			_release_ledge()
 
 func _process_state_transitions() -> void:
+	if is_crouching:
+		_transition_to_state(PlayerState.CROUCH)
+		return
 	if is_climbing and is_on_wall_only() and not is_dashing:
 		if wall_reposition_timer > 0.0:
 			_transition_to_state(PlayerState.WALL_REPOSITION)
@@ -677,20 +817,30 @@ func _update_animation() -> void:
 	_animation_travel = Vector2.ZERO
 	if sprite == null:
 		return
-	if current_state == PlayerState.LEDGE_HANG:
-		if not _hang_visual_active:
+	# Standing up replays the crouch frames in reverse while idle.
+	var crouch_pose: bool = current_state == PlayerState.CROUCH or (current_state == PlayerState.IDLE and _crouch_amount > 0.0)
+	# TODO: Placeholder pull-up-into-crouch transition: the climb frames rise, then the held crouch frame
+	# shuffles onto the ledge. Replace with the dedicated transition animation when it is provided.
+	if is_crouching and not (current_state == PlayerState.LEDGE_CLIMB and _ledge_waypoints.size() > 1):
+		crouch_pose = true
+	if current_state == PlayerState.LEDGE_HANG or crouch_pose:
+		if not _sprite_override_active:
 			_sprite_rest_scale = sprite.scale
 			_sprite_rest_position = sprite.position
-			_hang_visual_active = true
-		sprite.scale = _sprite_rest_scale * ledge_sprite_scale
-		var grip: Vector2 = ledge_sprite_grip
-		if sprite.flip_h:
-			grip.x = -grip.x
-		sprite.position = to_local(_ledge_top) - sprite.transform.basis_xform(grip)
-	elif _hang_visual_active:
+			_sprite_override_active = true
+		if crouch_pose:
+			sprite.scale = _sprite_rest_scale * CROUCH_SPRITE_SCALE
+			sprite.position = _sprite_rest_position + Vector2(0.0, CROUCH_SPRITE_FEET_SHIFT * _sprite_rest_scale.y)
+		else:
+			sprite.scale = _sprite_rest_scale * ledge_sprite_scale
+			var grip: Vector2 = ledge_sprite_grip
+			if sprite.flip_h:
+				grip.x = -grip.x
+			sprite.position = to_local(_ledge_top) - sprite.transform.basis_xform(grip)
+	elif _sprite_override_active:
 		sprite.scale = _sprite_rest_scale
 		sprite.position = _sprite_rest_position
-		_hang_visual_active = false
+		_sprite_override_active = false
 	var animation_name: StringName = &"idle"
 	var cycle_advance: float = 0.0
 	var distance_driven: bool = false
@@ -720,12 +870,19 @@ func _update_animation() -> void:
 			# Tired slipping keeps the grip pose; intentional descent reverses the cycle.
 			if is_climbing and cached_climb_input != 0.0 and absf(travel.y) > 0.001:
 				cycle_advance = -travel.y / maxf(cycle_distance, 0.001)
+	if crouch_pose:
+		animation_name = &"crouch"
 	if sprite.sprite_frames == null or not sprite.sprite_frames.has_animation(animation_name):
 		return
 	if sprite.animation != animation_name:
 		_animation_cycle = 0.0
 		sprite.animation = animation_name
-	if distance_driven:
+	if crouch_pose:
+		# Frames follow the crouch amount so reversing mid-transition never jumps.
+		sprite.pause()
+		var last_frame: int = sprite.sprite_frames.get_frame_count(animation_name) - 1
+		sprite.set_frame_and_progress(roundi(_crouch_amount * last_frame), 0.0)
+	elif distance_driven:
 		sprite.pause()
 		_animation_cycle = fposmod(_animation_cycle + cycle_advance, 1.0)
 		_set_locomotion_frame(sprite)
@@ -813,6 +970,7 @@ func _clear_wall_jump_inputs() -> void:
 	_wall_jump_input_timer = 0.0
 	_wall_away_input_timer = 0.0
 	_wall_away_normal = 0.0
+	_wall_drop_normal = 0.0
 
 func _execute_wall_jump(saved_normal: float = 0.0) -> void:
 	var wall_normal: float = saved_normal if saved_normal != 0.0 else get_wall_normal().x
@@ -866,7 +1024,7 @@ func _wall_is_tall_enough() -> bool:
 func _handle_wall_interactions(input_dir: float, climb_input: float, delta: float) -> bool:
 	var was_climbing: bool = is_climbing
 	is_climbing = false
-	if not wall_climb_unlocked or not is_on_wall_only() or wall_jump_timer > 0.0:
+	if not wall_climb_unlocked or not is_on_wall_only() or wall_jump_timer > 0.0 or _wall_hop_direction != 0.0:
 		return false
 	if not _wall_is_tall_enough():
 		_clear_wall_jump_inputs()
@@ -882,7 +1040,8 @@ func _handle_wall_interactions(input_dir: float, climb_input: float, delta: floa
 		_wall_jump_origin_normal = 0.0
 	# Normals point away from either wall: positive product means away input.
 	if input_dir * wall_normal > 0.0:
-		if _wall_jump_input_timer > 0.0 or Input.is_action_just_pressed("move_jump"):
+		# Away + Down + Jump takes the downward push-off; other away jumps launch upward.
+		if (_wall_jump_input_timer > 0.0 or Input.is_action_just_pressed("move_jump")) and climb_input <= 0.0:
 			_execute_wall_jump()
 		else:
 			_push_off_wall()
@@ -891,6 +1050,15 @@ func _handle_wall_interactions(input_dir: float, climb_input: float, delta: floa
 	var climbing: bool = climb_input != 0.0
 	if not was_climbing and not holding and not climbing:
 		return false
+	# Gripping Jump: Up hops up the wall, Down hops down it, and no direction (or only toward
+	# the wall, which it blocks) drops straight down. Upward hops respect the reposition lock.
+	if Input.is_action_just_pressed("move_jump"):
+		if climb_input > 0.0 or (climb_input < 0.0 and wall_reposition_timer <= 0.0):
+			_start_wall_hop(signf(climb_input), wall_normal)
+			return true
+		if climb_input == 0.0:
+			_drop_from_wall(wall_normal)
+			return true
 	stamina -= maxf(0.0, wall_stamina_drain) * delta
 	if stamina <= 0.0:
 		velocity.y = maxf(0.0, velocity.y)
@@ -906,6 +1074,44 @@ func _handle_wall_interactions(input_dir: float, climb_input: float, delta: floa
 	# Push into the surface to retain collision contact while holding or climbing.
 	velocity.x = -wall_normal * move_speed * get_stamina_speed_multiplier()
 	return true
+
+# Lets go of the wall. The control lock keeps the fall straight and stops an instant re-grab;
+# Away within the Jump grace window still upgrades the drop to a wall jump.
+func _drop_from_wall(wall_normal: float) -> void:
+	_wall_away_input_timer = 0.0
+	_wall_away_normal = 0.0
+	_wall_drop_normal = wall_normal
+	jump_buffer_timer = 0.0
+	velocity.x = 0.0
+	velocity.y = maxf(velocity.y, 0.0)
+	wall_jump_timer = wall_jump_control_lock
+	is_climbing = false
+
+# Hops along the wall while staying in contact, then catches the wall again.
+func _start_wall_hop(direction: float, wall_normal: float) -> void:
+	_clear_wall_jump_inputs()
+	jump_buffer_timer = 0.0
+	_wall_hop_direction = direction
+	_wall_hop_normal = wall_normal
+	_wall_hop_start_y = global_position.y
+	is_climbing = false
+	if direction < 0.0:
+		velocity.y = initial_jump_velocity * get_stamina_speed_multiplier()
+	else:
+		velocity.y = maxf(velocity.y, absf(wall_drop_impulse.y) * get_stamina_speed_multiplier())
+	velocity.x = -wall_normal * move_speed * get_stamina_speed_multiplier()
+
+func _update_wall_hop() -> void:
+	if _wall_hop_direction == 0.0:
+		return
+	var finished: bool = velocity.y >= 0.0 if _wall_hop_direction < 0.0 else global_position.y - _wall_hop_start_y >= wall_hop_down_distance
+	if finished or is_on_floor() or not is_on_wall() or is_dashing or stamina <= 0.0:
+		_wall_hop_direction = 0.0
+		# Grip again at the end of the hop; leaving the wall early just continues the jump or fall.
+		is_climbing = finished and is_on_wall()
+		return
+	# Push into the wall so contact is kept for the catch.
+	velocity.x = -_wall_hop_normal * move_speed * get_stamina_speed_multiplier()
 
 # A downward push-off spends the remaining air jumps; a Jump press within the grace window
 # upgrades it to a wall jump, which refills them.
@@ -928,19 +1134,37 @@ func _handle_dash_input() -> void:
 		dash_unlocked and Input.is_action_just_pressed("dash") and dash_cooldown_timer <= 0.0 and not is_dashing
 		and dash_energy >= dash_energy_cost
 	):
-		dash_energy -= maxf(0.0, dash_energy_cost)
 		var raw_dir: Vector2 = Vector2(cached_input_dir, cached_climb_input)
-		if raw_dir != Vector2.ZERO:
-			dash_direction = raw_dir.normalized()
-		else:
-			dash_direction = Vector2(get_facing_direction(), 0.0)
+		var direction: Vector2 = raw_dir
+		# On a wall or ledge, drop the blocked into-wall part; with no input, dash away from the wall.
+		var wall_normal: float = _dash_wall_normal()
+		if wall_normal != 0.0:
+			if direction.x * wall_normal < 0.0:
+				direction.x = 0.0
+			if raw_dir == Vector2.ZERO:
+				direction = Vector2(wall_normal, 0.0)
+		elif direction == Vector2.ZERO:
+			direction = Vector2(get_facing_direction(), 0.0)
+		if direction == Vector2.ZERO:
+			return
+		dash_energy -= maxf(0.0, dash_energy_cost)
+		dash_direction = direction.normalized()
 
 		is_dashing = true
+		_wall_hop_direction = 0.0
 		_clear_wall_jump_inputs()
 		dash_start_vertical_velocity = velocity.y
 		dash_timer = dash_duration
 		dash_cooldown_timer = dash_cooldown
 		dash_distance_travelled = 0.0
+
+# Horizontal normal of the wall the player is climbing or hanging from, or 0 when free.
+func _dash_wall_normal() -> float:
+	if _is_on_ledge():
+		return -_ledge_direction
+	if is_climbing and is_on_wall_only():
+		return get_wall_normal().x
+	return 0.0
 
 func _process_dash(delta: float) -> void:
 	is_climbing = false

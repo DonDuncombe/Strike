@@ -31,6 +31,7 @@ func _reset(direction: float) -> void:
 	player.ledge_hang_unlocked = true
 	player._ledge_regrab_timer = 0.0
 	player.wall_jump_timer = 0.0
+	player.is_climbing = false
 
 func _run() -> void:
 	_body(Vector2(200.0, 100.0), Vector2(200.0, 200.0))
@@ -88,13 +89,30 @@ func _run() -> void:
 		player.stamina = 100.0
 		_check(not player._try_grab_ledge(), "Release must prevent immediate regrab")
 	_reset(1.0)
-	var ceiling: StaticBody2D = _body(Vector2(110.0, -80.0), Vector2(100.0, 10.0))
+	var ceiling: StaticBody2D = _body(Vector2(110.0, -40.0), Vector2(100.0, 10.0))
+	await physics_frame
+	await process_frame
+	_check(player._try_grab_ledge(), "Very low ceiling must still permit hanging")
+	player._begin_ledge_climb()
+	_check(player.current_state == PlayerController.PlayerState.LEDGE_HANG and not player.is_crouching, "Ceiling too low for a crouch must block pull-up")
+	ceiling.queue_free()
+	await physics_frame
+	await process_frame
+	_reset(1.0)
+	ceiling = _body(Vector2(110.0, -80.0), Vector2(100.0, 10.0))
 	await physics_frame
 	await process_frame
 	_check(player._try_grab_ledge(), "Low ceiling must still permit hanging")
 	player._begin_ledge_climb()
-	_check(player.current_state == PlayerController.PlayerState.LEDGE_HANG, "Low ceiling must block pull-up")
+	_check(player.current_state == PlayerController.PlayerState.LEDGE_CLIMB and player.is_crouching, "Crouch-height gap must pull up into a crouch")
+	for tick: int in range(180):
+		if player._is_on_ledge():
+			player._process_ledge(1.0 / 60.0)
+			player._update_animation()
+	_check(not player._is_on_ledge() and player.is_crouching and player.position.y < -20.0, "Crouched pull-up must finish crouched on the platform")
+	_check(sprite.animation == &"crouch", "Crouched pull-up must end in the crouch pose")
 	ceiling.queue_free()
+	player._set_crouching(false)
 	await physics_frame
 	await process_frame
 	_reset(1.0)
@@ -104,20 +122,76 @@ func _run() -> void:
 	player.is_dashing = true
 	_check(not player._try_grab_ledge(), "Active dash must not grab")
 	player.is_dashing = false
+	# Neutral Jump pulls up 50 percent faster than Up.
+	var climb_ticks: Array[int] = []
+	for use_jump: bool in [false, true]:
+		_reset(1.0)
+		player._try_grab_ledge()
+		player.cached_input_dir = 0.0
+		player._process_ledge(0.016)
+		Input.action_press("move_jump" if use_jump else "move_up")
+		player._process_ledge(0.016)
+		Input.action_release("move_jump" if use_jump else "move_up")
+		_check(player.current_state == PlayerController.PlayerState.LEDGE_CLIMB, "Jump and Up must both start a pull-up")
+		var ticks: int = 0
+		while player._is_on_ledge() and ticks < 600:
+			player._process_ledge(1.0 / 60.0)
+			ticks += 1
+		climb_ticks.append(ticks)
+		await process_frame
+	_check(absf(float(climb_ticks[0]) / float(climb_ticks[1]) - player.ledge_jump_pull_up_multiplier) < 0.1, "Jump pull-up must be 50 percent faster (%s ticks)" % [climb_ticks])
 	_reset(1.0)
 	player._try_grab_ledge()
+	player.cached_input_dir = -1.0
 	Input.action_press("move_jump")
 	player._process_ledge(0.016)
-	_check(not player._is_on_ledge() and player.velocity.x < 0.0 and player.velocity.y < 0.0, "Jump must launch away from ledge")
+	_check(not player._is_on_ledge() and player.velocity.x < 0.0 and player.velocity.y < 0.0, "Away + Jump must launch away from ledge")
 	Input.action_release("move_jump")
 	await process_frame
-	_reset(1.0)
-	player._try_grab_ledge()
-	Input.action_press("move_down")
-	player._process_ledge(0.016)
-	_check(not player._is_on_ledge(), "Down must release ledge")
-	Input.action_release("move_down")
+	for direction: float in [-1.0, 1.0]:
+		_reset(direction)
+		player._try_grab_ledge()
+		var hang_y: float = player.position.y
+		# Run through the real physics loop: the climb-down steps into the wall with move_and_slide.
+		player.set_physics_process(true)
+		Input.action_press("move_down")
+		await physics_frame
+		await physics_frame
+		_check(not player._is_on_ledge() and player.is_climbing and player.is_on_wall_only(), "Down must climb down onto the wall below the ledge")
+		for tick: int in range(10):
+			await physics_frame
+		player.set_physics_process(false)
+		_check(player.is_climbing and player.position.y > hang_y + 5.0 and player.velocity.y > 0.0, "Holding Down must keep climbing down the wall")
+		Input.action_release("move_down")
+		await process_frame
+	# A thin platform has no climbable wall below the ledge, so Down drops instead.
+	var thin: StaticBody2D = _body(Vector2(600.0, 100.0), Vector2(100.0, 20.0))
+	await physics_frame
 	await process_frame
+	_reset(1.0)
+	player.position = Vector2(526.0, 114.0)
+	_check(player._try_grab_ledge(), "Thin platform must still be grabbable")
+	player.set_physics_process(true)
+	Input.action_press("move_down")
+	for tick: int in range(40):
+		await physics_frame
+	player.set_physics_process(false)
+	_check(not player._is_on_ledge() and not player.is_climbing and player.velocity.y > 0.0, "Down must fall once the thin platform's side runs out")
+	Input.action_release("move_down")
+	thin.queue_free()
+	await physics_frame
+	await process_frame
+	for direction: float in [-1.0, 1.0]:
+		_reset(direction)
+		player._try_grab_ledge()
+		player._process_ledge(0.016)
+		_check(player.current_state == PlayerController.PlayerState.LEDGE_HANG, "Holding toward the ledge from the grab must keep hanging")
+		player.cached_input_dir = 0.0
+		player._process_ledge(0.016)
+		player.cached_input_dir = direction
+		player._process_ledge(0.016)
+		_check(player.current_state == PlayerController.PlayerState.LEDGE_CLIMB, "A fresh press toward the ledge must pull up")
+		player._release_ledge()
 	_reset(1.0)
 	player._try_grab_ledge()
 	player.cached_input_dir = -1.0
@@ -138,11 +212,61 @@ func _run() -> void:
 	await process_frame
 	_reset(1.0)
 	player._try_grab_ledge()
+	player.cached_input_dir = 0.0
 	Input.action_press("dash")
 	player._process_ledge(0.016)
 	_check(player.is_dashing and player.current_state == PlayerController.PlayerState.DASH, "Dash must release ledge into dash state")
+	_check(player.dash_direction.is_equal_approx(Vector2.LEFT), "Dash from a hang without input must go away from the wall")
 	Input.action_release("dash")
 	player.is_dashing = false
+	await process_frame
+	_reset(1.0)
+	player._try_grab_ledge()
+	player.dash_cooldown_timer = 0.0
+	var energy_before: float = player.dash_energy
+	Input.action_press("dash")
+	player._process_ledge(0.016)
+	_check(not player.is_dashing and player._is_on_ledge() and player.dash_energy == energy_before, "Dash straight into the wall must be refused without spending energy")
+	Input.action_release("dash")
+	await process_frame
+	player.cached_climb_input = -1.0
+	Input.action_press("dash")
+	player._process_ledge(0.016)
+	_check(player.is_dashing and player.dash_direction.is_equal_approx(Vector2.UP), "Up-toward dash from a hang must go straight up")
+	Input.action_release("dash")
+	player.is_dashing = false
+	player.cached_climb_input = 0.0
+	player.dash_energy = 100.0
+	await process_frame
+	# Hold onto the tall side of the left platform, then dash from the wall.
+	player._release_ledge()
+	player.position = Vector2(-76.0, 110.0)
+	player.velocity = Vector2.ZERO
+	player.dash_cooldown_timer = 0.0
+	player.set_physics_process(true)
+	Input.action_press("move_left")
+	for tick: int in range(15):
+		await physics_frame
+	_check(player.is_climbing, "Holding into a tall wall must hold on")
+	Input.action_press("dash")
+	await physics_frame
+	await physics_frame
+	Input.action_release("dash")
+	_check(not player.is_dashing, "Dash into a climbed wall must be refused")
+	Input.action_press("move_up")
+	await physics_frame
+	await physics_frame
+	player.dash_cooldown_timer = 0.0
+	Input.action_press("dash")
+	await physics_frame
+	await physics_frame
+	Input.action_release("dash")
+	_check(player.is_dashing and player.dash_direction.is_equal_approx(Vector2.UP), "Up-toward dash on a wall must go straight up")
+	Input.action_release("move_up")
+	Input.action_release("move_left")
+	player.set_physics_process(false)
+	player.is_dashing = false
+	player.dash_energy = 100.0
 	await process_frame
 	_reset(1.0)
 	var obstruction: StaticBody2D = _body(Vector2(94.0, 70.0), Vector2(6.0, 8.0))
