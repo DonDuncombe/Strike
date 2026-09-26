@@ -54,6 +54,21 @@ func _run() -> void:
 	player._process_dash(0.2)
 	_check(is_equal_approx(player.stamina, 98.0), "Dash drain must use elapsed seconds")
 	_check(is_equal_approx(player.velocity.x, player.dash_speed * 0.99), "Dash must use stamina speed")
+	player.stamina = 100.0
+	var drain: float = player.dash_stamina_drain
+	player.dash_stamina_drain = 0.0
+	player.dash_max_distance = 100.0
+	player.is_dashing = true
+	player.dash_timer = 0.2
+	player.dash_distance_travelled = 0.0
+	player._process_dash(0.05)
+	_check(player.is_dashing and is_equal_approx(player.velocity.x, player.dash_speed), "Dash under the distance cap must keep full speed")
+	player._process_dash(0.05)
+	_check(not player.is_dashing, "Dash must end at the distance cap")
+	_check(is_equal_approx(player.dash_distance_travelled, 100.0), "Dash must stop exactly at the distance cap")
+	_check(is_equal_approx(player.velocity.x, 25.0 / 0.05), "Final dash step must cover only the remaining distance")
+	player.dash_max_distance = 300.0
+	player.dash_stamina_drain = drain
 
 	player.position = Vector2(0.0, 280.0)
 	player.velocity = Vector2.ZERO

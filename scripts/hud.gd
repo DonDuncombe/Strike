@@ -9,8 +9,9 @@ const RED_BELOW: float = 30.0
 ## Stamina below this percentage flashes the bar and label.
 const FLASH_BELOW: float = 10.0
 const FLASH_PERIOD: float = 0.8
+const DASH_BLUE: Color = Color("4f9dff")
 
-## Player whose stamina is shown by this HUD. Assign the Player node; the HUD hides itself when this is empty.
+## Player whose stamina and dash energy are shown by this HUD. Assign the Player node; the HUD hides itself when this is empty.
 @export var player: PlayerController
 
 var _flash_elapsed: float = 0.0
@@ -18,6 +19,8 @@ var _flash_elapsed: float = 0.0
 @onready var stamina_bar: ProgressBar = $Panel/StaminaBar
 @onready var stamina_label: Label = $Panel/StaminaLabel
 @onready var stamina_fill: StyleBoxFlat = stamina_bar.get_theme_stylebox("fill") as StyleBoxFlat
+@onready var dash_bar: ProgressBar = $Panel/DashBar
+@onready var dash_label: Label = $Panel/DashLabel
 
 func _ready() -> void:
 	set_process(false)
@@ -27,6 +30,15 @@ func _ready() -> void:
 		return
 	player.stamina_changed.connect(_update_stamina)
 	_update_stamina(player.stamina)
+	dash_label.self_modulate = DASH_BLUE
+	player.dash_energy_changed.connect(_update_dash_energy)
+	_update_dash_energy(player.dash_energy)
+
+func _update_dash_energy(value: float) -> void:
+	dash_bar.value = value
+	dash_label.text = "DASH  %d%%" % floori(value)
+	if value < player.dash_energy_cost:
+		dash_label.text += "  •  EMPTY"
 
 func _update_stamina(value: float) -> void:
 	stamina_bar.value = value

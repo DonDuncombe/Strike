@@ -7,6 +7,7 @@ signal weapon_used(weapon_index: int, weapon_data: WeaponData)
 signal ability_changed(ability: StringName, unlocked: bool)
 signal stamina_changed(value: float)
 signal stamina_exhausted()
+signal dash_energy_changed(value: float)
 
 enum PlayerState { IDLE, WALK, JUMP, FALL, DASH, WALL_SLIDE, WALL_HOLD, WALL_CLIMB, WALL_REPOSITION, LEDGE_HANG, LEDGE_CLIMB }
 
@@ -145,10 +146,23 @@ enum PlayerState { IDLE, WALK, JUMP, FALL, DASH, WALL_SLIDE, WALL_HOLD, WALL_CLI
 @export var dash_speed: float = 1500.0
 ## Seconds a dash lasts. Increase for longer dash travel and more stamina consumed.
 @export var dash_duration: float = 0.2
+## Maximum world pixels travelled along the dash direction per dash. The dash ends early once reached. Set to 0 for no limit.
+@export_range(0.0, 1000.0, 1.0, "or_greater", "suffix:px") var dash_max_distance: float = 300.0
 ## Minimum seconds between dash starts. Increase to reduce how often the player can dash.
 @export var dash_cooldown: float = 0.6
 ## For horizontal dashes, keep the vertical speed from dash start. Disable to make horizontal dashes travel flat.
 @export var dash_preserve_vertical: bool = true
+## Speed in world pixels per second kept along the dash direction when a dash ends, before stamina scaling. Lower values stop closer to Dash Max Distance; higher values carry more momentum.
+@export_range(0.0, 2000.0, 1.0, "or_greater", "suffix:px/s") var dash_exit_speed: float = 140.0
+## Starting dash energy percentage, from 0 to 100. Refill it at runtime with restore_dash_energy(); changes update the HUD.
+@export_range(0.0, 100.0, 0.1) var dash_energy: float = 100.0:
+	set(value):
+		var previous: float = dash_energy
+		dash_energy = clampf(value, 0.0, 100.0)
+		if not is_equal_approx(previous, dash_energy):
+			dash_energy_changed.emit(dash_energy)
+## Dash energy percentage points consumed when a dash starts. A dash needs at least this much energy; set to 0 for unlimited dashes.
+@export_range(0.0, 100.0, 0.1) var dash_energy_cost: float = 20.0
 
 @export_category("Weapons")
 ## Ordered weapon resources available to the player. The first slot starts active; each is copied at startup so cooldowns are per player.
@@ -163,6 +177,7 @@ var coyote_timer: float = 0.0
 var jump_buffer_timer: float = 0.0
 var dash_timer: float = 0.0
 var dash_cooldown_timer: float = 0.0
+var dash_distance_travelled: float = 0.0
 var wall_jump_timer: float = 0.0
 var wall_reposition_timer: float = 0.0
 var is_dashing: bool = false
@@ -261,6 +276,10 @@ func _air_jumps_available() -> int:
 
 func get_stamina_speed_multiplier() -> float:
 	return lerpf(exhausted_speed_multiplier, 1.0, stamina / 100.0)
+
+## Adds dash energy percentage points, clamped to 100. Called by dash orbs and other pickups.
+func restore_dash_energy(amount: float) -> void:
+	dash_energy += maxf(0.0, amount)
 
 func _recover_stamina(delta: float) -> void:
 	if is_on_floor() and cached_input_dir == 0.0 and velocity.is_zero_approx() and not is_dashing:
@@ -363,6 +382,8 @@ func _dash_physics_step(delta: float) -> void:
 	_process_dash(delta)
 	_update_sprite_facing(dash_direction.x)
 	_move_with_animation_travel()
+	if not is_dashing:
+		_apply_dash_exit_speed()
 	_process_state_transitions()
 	_update_animation()
 
@@ -512,11 +533,17 @@ func _process_ledge(delta: float) -> void:
 		_release_ledge()
 		return
 	stamina -= maxf(0.0, ledge_stamina_drain) * delta
-	if stamina <= 0.0 or Input.is_action_pressed("move_down") or cached_input_dir * _ledge_direction < 0.0:
-		var jump_away: bool = stamina > 0.0 and Input.is_action_just_pressed("move_jump") and not Input.is_action_pressed("move_down")
+	if stamina <= 0.0 or Input.is_action_pressed("move_down"):
 		_release_ledge()
+		return
+	if cached_input_dir * _ledge_direction < 0.0:
+		var jump_away: bool = Input.is_action_just_pressed("move_jump")
+		_release_ledge()
+		# Match wall behavior: Away alone pushes off, and a Jump within the grace window upgrades it to a wall jump.
 		if jump_away:
 			_execute_wall_jump(-_ledge_direction)
+		else:
+			_push_off_wall(-_ledge_direction)
 		return
 	if Input.is_action_just_pressed("move_jump"):
 		_release_ledge()
@@ -882,9 +909,9 @@ func _handle_wall_interactions(input_dir: float, climb_input: float, delta: floa
 
 # A downward push-off spends the remaining air jumps; a Jump press within the grace window
 # upgrades it to a wall jump, which refills them.
-func _push_off_wall() -> void:
+func _push_off_wall(saved_normal: float = 0.0) -> void:
 	_clear_wall_jump_inputs()
-	var wall_normal: float = get_wall_normal().x
+	var wall_normal: float = saved_normal if saved_normal != 0.0 else get_wall_normal().x
 	_wall_away_normal = wall_normal
 	_wall_away_input_timer = maxf(0.0, wall_jump_input_grace)
 	velocity.x = wall_normal * absf(wall_drop_impulse.x) * get_stamina_speed_multiplier()
@@ -897,7 +924,11 @@ func _push_off_wall() -> void:
 	is_climbing = false
 
 func _handle_dash_input() -> void:
-	if dash_unlocked and Input.is_action_just_pressed("dash") and dash_cooldown_timer <= 0.0 and not is_dashing:
+	if (
+		dash_unlocked and Input.is_action_just_pressed("dash") and dash_cooldown_timer <= 0.0 and not is_dashing
+		and dash_energy >= dash_energy_cost
+	):
+		dash_energy -= maxf(0.0, dash_energy_cost)
 		var raw_dir: Vector2 = Vector2(cached_input_dir, cached_climb_input)
 		if raw_dir != Vector2.ZERO:
 			dash_direction = raw_dir.normalized()
@@ -909,18 +940,34 @@ func _handle_dash_input() -> void:
 		dash_start_vertical_velocity = velocity.y
 		dash_timer = dash_duration
 		dash_cooldown_timer = dash_cooldown
+		dash_distance_travelled = 0.0
 
 func _process_dash(delta: float) -> void:
 	is_climbing = false
 	stamina -= maxf(0.0, dash_stamina_drain) * minf(delta, maxf(0.0, dash_timer))
 	dash_timer -= delta
-	velocity = dash_direction * dash_speed * get_stamina_speed_multiplier()
+	var speed: float = dash_speed * get_stamina_speed_multiplier()
+	if dash_max_distance > 0.0 and delta > 0.0:
+		# Shorten the final step so the dash stops exactly at the distance cap.
+		var remaining: float = maxf(0.0, dash_max_distance - dash_distance_travelled)
+		if speed * delta >= remaining:
+			speed = remaining / delta
+			dash_timer = 0.0
+		dash_distance_travelled += speed * delta
+	velocity = dash_direction * speed
 
 	if dash_preserve_vertical and is_zero_approx(dash_direction.y):
 		velocity.y = dash_start_vertical_velocity
 
 	if dash_timer <= 0.0:
 		is_dashing = false
+
+# Runs after the final dash move so leftover dash speed cannot slide the player past the dash distance.
+func _apply_dash_exit_speed() -> void:
+	var exit_speed: float = maxf(0.0, dash_exit_speed) * get_stamina_speed_multiplier()
+	var along: float = velocity.dot(dash_direction)
+	if along > exit_speed:
+		velocity -= dash_direction * (along - exit_speed)
 
 func _handle_weapon_input() -> void:
 	if inventory.is_empty():

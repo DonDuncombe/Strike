@@ -1,6 +1,6 @@
 # Strike coding guidance
 
-Use [AGENT_godot.md](AGENT_godot.md) for the project's Godot workflow and [godot_4_7_reference.md](godot_4_7_reference.md) as the local Godot API reference. These rules apply to code created or changed in this repository.
+Use [AGENT_godot.md](AGENT_godot.md) for the project's Godot workflow and [godot_4_7_reference.md](godot_4_7_reference.md) as the local Godot API reference. Record engine behavior that has been verified in this project, such as draw-order rules, in [godot_verified_notes.md](godot_verified_notes.md); check it before adding new visual elements. These rules apply to code created or changed in this repository.
 
 ## Godot and GDScript
 
@@ -15,6 +15,12 @@ Use [AGENT_godot.md](AGENT_godot.md) for the project's Godot workflow and [godot
 - Preserve existing scene paths, input action names, and public signals unless the requested change requires updating their callers.
 - Keep player movement values tunable through exports where designers need to adjust feel. Keep unlockable abilities gated by their progression flags and runtime unlock API.
 - Make changes in the relevant script or scene rather than adding abstractions without a current use.
+
+## Save command
+
+- When the user types `save as "x"`, treat the text inside the quotes as the save name. Stage all current changes, commit them with that name as the commit message, and push the current branch to `origin`.
+- Before committing, check `git status`. If there is nothing to commit and nothing unpushed, do not create an empty commit. Tell the user the codebase version is up to date.
+- If there is nothing new to commit but local commits have not been pushed, push them and report that.
 
 ## Verification and communication
 

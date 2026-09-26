@@ -120,6 +120,24 @@ func _run() -> void:
 	await process_frame
 	_reset(1.0)
 	player._try_grab_ledge()
+	player.cached_input_dir = -1.0
+	player._process_ledge(0.016)
+	_check(not player._is_on_ledge() and player.velocity.x < 0.0, "Away must push off the ledge like a wall")
+	_check(player._wall_away_input_timer > 0.0 and player._wall_away_normal < 0.0, "Ledge push-off must open the wall-jump grace window")
+	player.set_physics_process(true)
+	Input.action_press("move_left")
+	Input.action_press("move_jump")
+	# Scripted presses register as just pressed on the following physics frame.
+	await physics_frame
+	await physics_frame
+	# Push-off spends all air jumps, so rising with refilled jumps proves the wall-jump upgrade.
+	_check(player.velocity.x < 0.0 and player.velocity.y < 0.0 and player.jumps_left > 0, "Jump after a ledge push-off must become a wall jump")
+	Input.action_release("move_jump")
+	Input.action_release("move_left")
+	player.set_physics_process(false)
+	await process_frame
+	_reset(1.0)
+	player._try_grab_ledge()
 	Input.action_press("dash")
 	player._process_ledge(0.016)
 	_check(player.is_dashing and player.current_state == PlayerController.PlayerState.DASH, "Dash must release ledge into dash state")
