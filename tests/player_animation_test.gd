@@ -54,20 +54,20 @@ func _run() -> void:
 	player.current_state = PlayerController.PlayerState.WALL_CLIMB
 	player.is_climbing = true
 	var climb_distance: float = player.climb_cycle_distance * sprite.global_transform.y.length()
-	Input.action_press("move_up")
+	player.cached_climb_input = -1.0
 	player._animation_travel = Vector2(0.0, -climb_distance * 0.4)
 	player._update_animation()
 	_check(is_equal_approx(player._animation_cycle, 0.4), "Upward travel advances climb")
-	Input.action_release("move_up")
+	player.cached_climb_input = 0.0
 	player.current_state = PlayerController.PlayerState.WALL_HOLD
 	player._update_animation()
 	_check(is_equal_approx(player._animation_cycle, 0.4), "Hold preserves grip phase")
-	Input.action_press("move_down")
+	player.cached_climb_input = 1.0
 	player.current_state = PlayerController.PlayerState.WALL_REPOSITION
 	player._animation_travel = Vector2(0.0, climb_distance * 0.1)
 	player._update_animation()
 	_check(is_equal_approx(player._animation_cycle, 0.3), "Descent reverses phase even during reposition")
-	Input.action_release("move_down")
+	player.cached_climb_input = 0.0
 	player.current_state = PlayerController.PlayerState.WALL_SLIDE
 	player._animation_travel = Vector2(0.0, 3.0)
 	player._update_animation()

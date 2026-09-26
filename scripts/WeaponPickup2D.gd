@@ -16,13 +16,10 @@ signal picked_up(by_entity: Node2D, weapon_data: WeaponData)
 ## Bobbing angular speed in radians per second. A full cycle takes 2 * PI divided by this value; 0 stops the animation.
 @export var float_frequency: float = 2.0
 
-var _base_y_position: float = 0.0
 var _time_passed: float = 0.0
 
 func _ready() -> void:
-	_base_y_position = position.y
 	body_entered.connect(_on_body_entered)
-	_update_visuals()
 
 func _process(delta: float) -> void:
 	if sprite_node == null:
@@ -30,23 +27,12 @@ func _process(delta: float) -> void:
 	_time_passed += delta
 	sprite_node.position.y = sin(_time_passed * float_frequency) * float_amplitude
 
-func _update_visuals() -> void:
-	if weapon_data == null or sprite_node == null:
-		return
-	# Resource name or placeholder setup
-	sprite_node.queue_redraw()
-
 func _on_body_entered(body: Node2D) -> void:
-	if weapon_data == null:
+	if weapon_data == null or not body is PlayerController:
 		return
-
-	if body is PlayerController:
-		var player := body as PlayerController
-		player.inventory.append(weapon_data)
-		
-		if auto_equip:
-			player.active_weapon_index = player.inventory.size() - 1
-			player.weapon_switched.emit(player.active_weapon_index, weapon_data)
-			
-		picked_up.emit(player, weapon_data)
-		queue_free()
+	var player: PlayerController = body as PlayerController
+	player.add_weapon(weapon_data, auto_equip)
+	# Stop further overlaps from granting the weapon again before the free happens.
+	set_deferred("monitoring", false)
+	picked_up.emit(player, weapon_data)
+	queue_free()

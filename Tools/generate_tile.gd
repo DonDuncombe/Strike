@@ -1,20 +1,15 @@
 @tool
 extends EditorScript
 
-func _run():
-	# Step 1: Create a 64x64 image in RGBA8 format
-	var img := Image.create(64, 64, false, Image.FORMAT_RGBA8)
+const OUTPUT_PATH: String = "res://assets/images/Tiles/collision_tile.tres"
+
+# Regenerates the solid 64x64 texture used by the CollisionGrid tile set in main.tscn.
+func _run() -> void:
+	var img: Image = Image.create(64, 64, false, Image.FORMAT_RGBA8)
 	img.fill(Color.BLACK)
-
-	# Step 2: Use the static constructor to create a texture from the image
-	var tex := ImageTexture.create_from_image(img)
-
-	# Step 3: Print dimensions to confirm
-	print("Texture size before save: %d x %d" % [tex.get_width(), tex.get_height()])
-
-	# Step 4: Save the texture as a .tres resource
-	var error := ResourceSaver.save(tex, "res://collision_tile.tres")
+	var tex: ImageTexture = ImageTexture.create_from_image(img)
+	var error: Error = ResourceSaver.save(tex, OUTPUT_PATH)
 	if error != OK:
-		push_error("Failed to save texture: %s" % error)
+		push_error("Failed to save %s: %s" % [OUTPUT_PATH, error_string(error)])
 	else:
-		print("Saved collision_tile.tres successfully")
+		print("Saved %s (%d x %d)" % [OUTPUT_PATH, tex.get_width(), tex.get_height()])

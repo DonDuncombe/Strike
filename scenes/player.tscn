@@ -3,7 +3,7 @@
 [ext_resource type="Script" uid="uid://df0wy7773xk8u" path="res://scripts/player.gd" id="1_player"]
 [ext_resource type="Texture2D" uid="uid://b2dl3tw4bp2tg" path="res://assets/images/Skelly/Skelly-climb.png" id="climb"]
 [ext_resource type="Texture2D" uid="uid://8acy4ho2nom4" path="res://assets/images/Skelly/Skelly-walk.png" id="walk"]
-[ext_resource type="Texture2D" path="res://assets/images/Skelly/Skelly-hang.png" id="hang"]
+[ext_resource type="Texture2D" uid="uid://2fgvo0qqwqwg" path="res://assets/images/Skelly/Skelly-hang.png" id="hang"]
 
 [sub_resource type="AtlasTexture" id="hang_0"]
 atlas = ExtResource("hang")
@@ -370,8 +370,13 @@ animations = [{
 [sub_resource type="RectangleShape2D" id="RectangleShape2D_u4gc1"]
 size = Vector2(35, 82)
 
-[node name="Player" type="CharacterBody2D" unique_id=2061209260]
+[node name="Player" type="CharacterBody2D" unique_id=2061209260 node_paths=PackedStringArray("sprite")]
 script = ExtResource("1_player")
+sprite = NodePath("AnimatedSprite2D")
+air_acceleration = 2000.0
+air_resistance = 100.0
+stamina_recovery = 16.0
+wall_jump_impulse = Vector2(250, -600)
 
 [node name="AnimatedSprite2D" type="AnimatedSprite2D" parent="." unique_id=1078629194]
 texture_filter = 2

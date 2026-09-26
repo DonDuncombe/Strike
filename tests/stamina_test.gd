@@ -89,11 +89,11 @@ func _run() -> void:
 	_check(is_equal_approx(player.velocity.y, -player.wall_climb_speed * player.get_stamina_speed_multiplier()), "Climb speed must scale with stamina")
 	player.stamina = 9.0
 	await _frames(3)
-	_check(player.velocity.y < 0.0 and absf(player.velocity.y) < player.wall_climb_speed * 0.1, "Below 10 percent, climbing must be very slow")
+	_check(player.velocity.y < 0.0 and absf(player.velocity.y) < player.wall_climb_speed * 0.1, "Below the low-stamina threshold, climbing must be very slow")
 	Input.action_release("move_up")
 	Input.action_press("move_right")
 	await _frames(3)
-	_check(is_equal_approx(player.velocity.y, player.wall_tired_slide_speed), "Below 10 percent, holding must slowly slide")
+	_check(is_equal_approx(player.velocity.y, player.wall_tired_slide_speed), "Below the low-stamina threshold, holding must slowly slide")
 	Input.action_press("move_up")
 	player.stamina = 0.01
 	var held_height: float = player.position.y

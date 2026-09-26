@@ -11,8 +11,8 @@ signal stamina_exhausted()
 enum PlayerState { IDLE, WALK, JUMP, FALL, DASH, WALL_SLIDE, WALL_HOLD, WALL_CLIMB, WALL_REPOSITION, LEDGE_HANG, LEDGE_CLIMB }
 
 @export_category("Node References")
-## Sprite used for facing and animation. Assign the player AnimatedSprite2D; leave empty to find a sprite child automatically.
-@export var sprite: Node2D
+## Sprite used for facing and animation. Leave empty to use the AnimatedSprite2D child named AnimatedSprite2D.
+@export var sprite: AnimatedSprite2D
 
 @export_category("Movement Base")
 ## Horizontal speed in world pixels per second at full stamina. Increase for faster running.
@@ -52,16 +52,25 @@ enum PlayerState { IDLE, WALK, JUMP, FALL, DASH, WALL_SLIDE, WALL_HOLD, WALL_CLI
 @export_range(0.5, 1.0, 0.01) var exhausted_speed_multiplier: float = 0.5
 
 @export_category("Jump & Gravity")
-## Full-stamina jump height in world pixels. Increase for higher jumps; gravity and takeoff speed are calculated from this value at startup.
-@export var jump_height: float = 90.0
-## Seconds to reach the jump peak while holding Jump. Must be greater than 0; shorter times make the ascent snappier.
-@export var time_to_peak: float = 0.35
-## Seconds used to calculate falling gravity from Jump Height. Must be greater than 0; shorter times give faster falls and stronger jump-release gravity.
-@export var time_to_descent: float = 0.30
+## Full-stamina jump height in world pixels. Increase for higher jumps; gravity and takeoff speed are recalculated whenever this changes.
+@export var jump_height: float = 90.0:
+	set(value):
+		jump_height = value
+		_recalculate_physics()
+## Seconds to reach the jump peak while holding Jump. Shorter times make the ascent snappier.
+@export_range(0.01, 2.0, 0.01, "or_greater") var time_to_peak: float = 0.35:
+	set(value):
+		time_to_peak = maxf(value, 0.01)
+		_recalculate_physics()
+## Seconds used to calculate falling gravity from Jump Height. Shorter times give faster falls and stronger jump-release gravity.
+@export_range(0.01, 2.0, 0.01, "or_greater") var time_to_descent: float = 0.30:
+	set(value):
+		time_to_descent = maxf(value, 0.01)
+		_recalculate_physics()
 ## Maximum downward speed in world pixels per second. Lower this to limit long-fall speed.
 @export var max_fall_speed: float = 2500.0
 ## Total jumps including the ground jump. Use 2 for one air jump; air jumps also require Double Jump Unlocked.
-@export var max_jumps: int = 2
+@export_range(1, 5, 1, "or_greater") var max_jumps: int = 2
 
 @export_category("Unlockable Abilities")
 ## Allow dashing at startup. Progression code can change this with set_ability_unlocked("dash", unlocked).
@@ -105,13 +114,6 @@ enum PlayerState { IDLE, WALK, JUMP, FALL, DASH, WALL_SLIDE, WALL_HOLD, WALL_CLI
 ## Downward ray length in world pixels used to confirm ground at the pull-up destination. Must exceed Ledge Clearance.
 @export_range(0.1, 30.0, 0.1) var ledge_support_probe_depth: float = 3.0
 
-var _ledge_regrab_timer: float = 0.0
-var _ledge_direction: float = 0.0
-var _ledge_top: Vector2
-var _ledge_body: Node2D
-var _ledge_body_transform: Transform2D
-var _ledge_waypoints: Array[Vector2] = []
-
 @export_category("Juice & Assist Timers")
 ## Seconds after leaving the floor during which a ground jump is still allowed. Increase to make edge jumps more forgiving.
 @export var coyote_time: float = 0.15
@@ -119,15 +121,13 @@ var _ledge_waypoints: Array[Vector2] = []
 @export var jump_buffer_time: float = 0.12
 
 @export_category("Wall Movement")
-## Reserved setting; currently unused by the wall controller. Use Wall Climb Speed for intentional descent and Wall Tired Slide Speed for tired slipping.
-@export var wall_slide_speed: float = 60.0
 ## Intentional up/down wall movement speed in world pixels per second before stamina scaling. Increase for faster climbing and descending.
 @export var wall_climb_speed: float = 80.0
 ## Wall-jump velocity in pixels per second before stamina scaling. X is the outward speed; use a negative Y to launch upward.
 @export var wall_jump_impulse: Vector2 = Vector2(250, -500)
 ## Seconds after wall jumping or pushing off during which horizontal input and wall grabbing are suppressed. Increase to preserve the launch trajectory.
 @export var wall_jump_control_lock: float = 0.15
-## Maximum seconds between Away and Jump presses, in either order, to count as a wall jump. Set to 0 to require simultaneous input.
+## Maximum seconds between Away and Jump presses, in either order, to count as a wall jump. A push-off without a wall jump spends the remaining air jumps. Set to 0 to require simultaneous input.
 @export_range(0.0, 0.5, 0.01, "or_greater") var wall_jump_input_grace: float = 0.4
 ## Seconds of upward-climb lock after reaching the opposite wall following a wall jump. Holding and descending remain available.
 @export_range(0.0, 5.0, 0.05, "or_greater") var wall_reposition_duration: float = 1.0
@@ -151,7 +151,7 @@ var _ledge_waypoints: Array[Vector2] = []
 @export var dash_preserve_vertical: bool = true
 
 @export_category("Weapons")
-## Ordered weapon resources available to the player. The first slot starts active; pickups append weapons to this list.
+## Ordered weapon resources available to the player. The first slot starts active; each is copied at startup so cooldowns are per player.
 @export var inventory: Array[WeaponData] = []
 
 var gravity_jump: float
@@ -165,17 +165,27 @@ var dash_timer: float = 0.0
 var dash_cooldown_timer: float = 0.0
 var wall_jump_timer: float = 0.0
 var wall_reposition_timer: float = 0.0
-var _wall_jump_origin_normal: float = 0.0
-var _wall_jump_input_timer: float = 0.0
-var _wall_away_input_timer: float = 0.0
-var _wall_away_normal: float = 0.0
 var is_dashing: bool = false
 var dash_direction: Vector2 = Vector2.RIGHT
 var active_weapon_index: int = 0
 var cached_input_dir: float = 0.0
+var cached_climb_input: float = 0.0
 var ground_jump_available: bool = false
 var is_climbing: bool = false
 var dash_start_vertical_velocity: float = 0.0
+var current_state: PlayerState = PlayerState.IDLE
+
+var _wall_jump_origin_normal: float = 0.0
+var _wall_jump_input_timer: float = 0.0
+var _wall_away_input_timer: float = 0.0
+var _wall_away_normal: float = 0.0
+
+var _ledge_regrab_timer: float = 0.0
+var _ledge_direction: float = 0.0
+var _ledge_top: Vector2
+var _ledge_body: Node2D
+var _ledge_body_transform: Transform2D
+var _ledge_waypoints: Array[Vector2] = []
 
 var _animation_cycle: float = 0.0
 var _animation_travel: Vector2 = Vector2.ZERO
@@ -183,29 +193,29 @@ var _hang_visual_active: bool = false
 var _sprite_rest_scale: Vector2
 var _sprite_rest_position: Vector2
 
-var current_state: PlayerState = PlayerState.IDLE
-var _state_transitions: Dictionary = {}
+var _state_transitions: Dictionary[PlayerState, Array] = {}
+
+@onready var _collision_shape: CollisionShape2D = _find_collision_shape()
 
 func _ready() -> void:
+	if sprite == null:
+		sprite = get_node_or_null(^"AnimatedSprite2D") as AnimatedSprite2D
 	_recalculate_physics()
 	jumps_left = _air_jumps_available()
-	_setup_sprite_reference()
+	for index: int in range(inventory.size()):
+		if inventory[index] != null:
+			inventory[index] = inventory[index].duplicate() as WeaponData
 	_init_state_machine()
 	_update_animation()
 
-func _setup_sprite_reference() -> void:
-	if sprite != null:
-		return
-		
-	if has_node("Sprite2D"):
-		sprite = get_node("Sprite2D") as Node2D
-	elif has_node("AnimatedSprite2D"):
-		sprite = get_node("AnimatedSprite2D") as Node2D
-	else:
-		for child in get_children():
-			if child is Sprite2D or child is AnimatedSprite2D:
-				sprite = child as Node2D
-				break
+func _find_collision_shape() -> CollisionShape2D:
+	var named: CollisionShape2D = get_node_or_null(^"CollisionShape2D") as CollisionShape2D
+	if named != null:
+		return named
+	for child: Node in get_children():
+		if child is CollisionShape2D:
+			return child as CollisionShape2D
+	return null
 
 func _recalculate_physics() -> void:
 	gravity_jump = (2.0 * jump_height) / (time_to_peak * time_to_peak)
@@ -250,55 +260,56 @@ func _air_jumps_available() -> int:
 	return maxi(0, max_jumps - 1) if double_jump_unlocked else 0
 
 func get_stamina_speed_multiplier() -> float:
-	return lerpf(clampf(exhausted_speed_multiplier, 0.5, 1.0), 1.0, stamina / 100.0)
+	return lerpf(exhausted_speed_multiplier, 1.0, stamina / 100.0)
 
 func _recover_stamina(delta: float) -> void:
 	if is_on_floor() and cached_input_dir == 0.0 and velocity.is_zero_approx() and not is_dashing:
 		stamina += maxf(0.0, stamina_recovery) * delta
 
+# Wall and ledge states are resolved directly in _process_state_transitions and the ledge handlers.
 func _init_state_machine() -> void:
 	_state_transitions = {
 		PlayerState.IDLE: [
-			{"target": PlayerState.DASH, "condition": Callable(self, "_cond_is_dashing")},
-			{"target": PlayerState.WALL_SLIDE, "condition": Callable(self, "_cond_is_wall_sliding")},
-			{"target": PlayerState.JUMP, "condition": Callable(self, "_cond_is_jumping")},
-			{"target": PlayerState.FALL, "condition": Callable(self, "_cond_is_falling")},
-			{"target": PlayerState.WALK, "condition": Callable(self, "_cond_is_walking")}
+			{"target": PlayerState.DASH, "condition": _cond_is_dashing},
+			{"target": PlayerState.WALL_SLIDE, "condition": _cond_is_wall_sliding},
+			{"target": PlayerState.JUMP, "condition": _cond_is_jumping},
+			{"target": PlayerState.FALL, "condition": _cond_is_falling},
+			{"target": PlayerState.WALK, "condition": _cond_is_walking}
 		],
 		PlayerState.WALK: [
-			{"target": PlayerState.DASH, "condition": Callable(self, "_cond_is_dashing")},
-			{"target": PlayerState.WALL_SLIDE, "condition": Callable(self, "_cond_is_wall_sliding")},
-			{"target": PlayerState.JUMP, "condition": Callable(self, "_cond_is_jumping")},
-			{"target": PlayerState.FALL, "condition": Callable(self, "_cond_is_falling")},
-			{"target": PlayerState.IDLE, "condition": Callable(self, "_cond_is_idle")}
+			{"target": PlayerState.DASH, "condition": _cond_is_dashing},
+			{"target": PlayerState.WALL_SLIDE, "condition": _cond_is_wall_sliding},
+			{"target": PlayerState.JUMP, "condition": _cond_is_jumping},
+			{"target": PlayerState.FALL, "condition": _cond_is_falling},
+			{"target": PlayerState.IDLE, "condition": _cond_is_idle}
 		],
 		PlayerState.JUMP: [
-			{"target": PlayerState.DASH, "condition": Callable(self, "_cond_is_dashing")},
-			{"target": PlayerState.WALL_SLIDE, "condition": Callable(self, "_cond_is_wall_sliding")},
-			{"target": PlayerState.FALL, "condition": Callable(self, "_cond_is_falling")},
-			{"target": PlayerState.WALK, "condition": Callable(self, "_cond_is_grounded_walking")},
-			{"target": PlayerState.IDLE, "condition": Callable(self, "_cond_is_idle")}
+			{"target": PlayerState.DASH, "condition": _cond_is_dashing},
+			{"target": PlayerState.WALL_SLIDE, "condition": _cond_is_wall_sliding},
+			{"target": PlayerState.FALL, "condition": _cond_is_falling},
+			{"target": PlayerState.WALK, "condition": _cond_is_grounded_walking},
+			{"target": PlayerState.IDLE, "condition": _cond_is_idle}
 		],
 		PlayerState.FALL: [
-			{"target": PlayerState.DASH, "condition": Callable(self, "_cond_is_dashing")},
-			{"target": PlayerState.WALL_SLIDE, "condition": Callable(self, "_cond_is_wall_sliding")},
-			{"target": PlayerState.JUMP, "condition": Callable(self, "_cond_is_jumping")},
-			{"target": PlayerState.WALK, "condition": Callable(self, "_cond_is_grounded_walking")},
-			{"target": PlayerState.IDLE, "condition": Callable(self, "_cond_is_idle")}
+			{"target": PlayerState.DASH, "condition": _cond_is_dashing},
+			{"target": PlayerState.WALL_SLIDE, "condition": _cond_is_wall_sliding},
+			{"target": PlayerState.JUMP, "condition": _cond_is_jumping},
+			{"target": PlayerState.WALK, "condition": _cond_is_grounded_walking},
+			{"target": PlayerState.IDLE, "condition": _cond_is_idle}
 		],
 		PlayerState.DASH: [
-			{"target": PlayerState.WALL_SLIDE, "condition": Callable(self, "_cond_dash_ended_wall_slide")},
-			{"target": PlayerState.JUMP, "condition": Callable(self, "_cond_dash_ended_jumping")},
-			{"target": PlayerState.FALL, "condition": Callable(self, "_cond_dash_ended_falling")},
-			{"target": PlayerState.WALK, "condition": Callable(self, "_cond_dash_ended_walking")},
-			{"target": PlayerState.IDLE, "condition": Callable(self, "_cond_dash_ended_idle")}
+			{"target": PlayerState.WALL_SLIDE, "condition": _cond_dash_ended_wall_slide},
+			{"target": PlayerState.JUMP, "condition": _cond_dash_ended_jumping},
+			{"target": PlayerState.FALL, "condition": _cond_dash_ended_falling},
+			{"target": PlayerState.WALK, "condition": _cond_dash_ended_walking},
+			{"target": PlayerState.IDLE, "condition": _cond_dash_ended_idle}
 		],
 		PlayerState.WALL_SLIDE: [
-			{"target": PlayerState.DASH, "condition": Callable(self, "_cond_is_dashing")},
-			{"target": PlayerState.JUMP, "condition": Callable(self, "_cond_is_jumping")},
-			{"target": PlayerState.FALL, "condition": Callable(self, "_cond_not_wall_sliding")},
-			{"target": PlayerState.WALK, "condition": Callable(self, "_cond_is_grounded_walking")},
-			{"target": PlayerState.IDLE, "condition": Callable(self, "_cond_is_idle")}
+			{"target": PlayerState.DASH, "condition": _cond_is_dashing},
+			{"target": PlayerState.JUMP, "condition": _cond_is_jumping},
+			{"target": PlayerState.FALL, "condition": _cond_not_wall_sliding},
+			{"target": PlayerState.WALK, "condition": _cond_is_grounded_walking},
+			{"target": PlayerState.IDLE, "condition": _cond_is_idle}
 		]
 	}
 
@@ -306,10 +317,9 @@ func _physics_process(delta: float) -> void:
 	_update_timers(delta)
 	_update_weapon_cooldowns(delta)
 	_handle_weapon_input()
-	
+
 	cached_input_dir = Input.get_axis("move_left", "move_right")
-	var climb_input: float = Input.get_axis("move_up", "move_down")
-	_ledge_regrab_timer = maxf(0.0, _ledge_regrab_timer - delta)
+	cached_climb_input = Input.get_axis("move_up", "move_down")
 	if _is_on_ledge():
 		_process_ledge(delta)
 		_update_animation()
@@ -318,40 +328,30 @@ func _physics_process(delta: float) -> void:
 		_update_animation()
 		return
 
+	if not is_dashing:
+		_handle_ground_state()
+		_handle_dash_input()
 	if is_dashing:
-		_process_dash(delta)
-		_update_sprite_facing(dash_direction.x)
-		_move_with_animation_travel()
-		_process_state_transitions()
-		_update_animation()
+		_dash_physics_step(delta)
 		return
-
-	_handle_ground_state()
-	_handle_dash_input()
-	if is_dashing:
-		_process_dash(delta)
-		_update_sprite_facing(dash_direction.x)
-		_move_with_animation_travel()
-		_process_state_transitions()
-		_update_animation()
-		return
-	if Input.is_action_just_pressed("move_jump"):
+	var jump_pressed: bool = Input.is_action_just_pressed("move_jump")
+	if jump_pressed:
 		jump_buffer_timer = jump_buffer_time
 		if wall_climb_unlocked and stamina > 0.0 and is_on_wall_only() and _wall_is_tall_enough():
 			_wall_jump_input_timer = maxf(0.0, wall_jump_input_grace)
 	# Upgrade a recent downward push-off to a wall jump, even after losing contact.
 	var late_wall_jump: bool = (
-		Input.is_action_just_pressed("move_jump") and _wall_away_input_timer > 0.0
+		jump_pressed and _wall_away_input_timer > 0.0
 		and wall_climb_unlocked and stamina > 0.0 and not is_on_floor()
-		and cached_input_dir * _wall_away_normal >= 0.0 and climb_input <= 0.0
+		and cached_input_dir * _wall_away_normal >= 0.0 and cached_climb_input <= 0.0
 	)
 	if late_wall_jump:
 		_execute_wall_jump(_wall_away_normal)
 	_apply_horizontal_movement(cached_input_dir, delta)
-	if not late_wall_jump and not _handle_wall_interactions(cached_input_dir, climb_input, delta):
-		_handle_jump(cached_input_dir)
+	if not late_wall_jump and not _handle_wall_interactions(cached_input_dir, cached_climb_input, delta):
+		_handle_jump()
 	_apply_gravity(delta)
-	
+
 	_resolve_facing(cached_input_dir)
 
 	_move_with_animation_travel()
@@ -359,19 +359,21 @@ func _physics_process(delta: float) -> void:
 	_process_state_transitions()
 	_update_animation()
 
+func _dash_physics_step(delta: float) -> void:
+	_process_dash(delta)
+	_update_sprite_facing(dash_direction.x)
+	_move_with_animation_travel()
+	_process_state_transitions()
+	_update_animation()
+
 func _is_on_ledge() -> bool:
 	return current_state in [PlayerState.LEDGE_HANG, PlayerState.LEDGE_CLIMB]
 
-func _ledge_bounds() -> Rect2:
-	var collision: CollisionShape2D = get_node_or_null("CollisionShape2D") as CollisionShape2D
-	if collision == null:
-		for child: Node in get_children():
-			if child is CollisionShape2D and not (child as CollisionShape2D).disabled:
-				collision = child as CollisionShape2D
-				break
-	if collision == null or collision.shape == null or collision.disabled:
+# Collider bounds relative to the player origin, used by ledge and wall-height probes.
+func _body_bounds() -> Rect2:
+	if _collision_shape == null or _collision_shape.shape == null or _collision_shape.disabled:
 		return Rect2()
-	var bounds: Rect2 = collision.global_transform * collision.shape.get_rect()
+	var bounds: Rect2 = _collision_shape.global_transform * _collision_shape.shape.get_rect()
 	bounds.position -= global_position
 	return bounds
 
@@ -433,7 +435,7 @@ func _try_grab_ledge() -> bool:
 	if is_zero_approx(direction):
 		return false
 	direction = signf(direction)
-	var bounds: Rect2 = _ledge_bounds()
+	var bounds: Rect2 = _body_bounds()
 	if bounds.size == Vector2.ZERO:
 		return false
 	var side: float = bounds.end.x if direction > 0.0 else bounds.position.x
@@ -487,7 +489,7 @@ func _release_ledge() -> void:
 	_transition_to_state(PlayerState.FALL)
 
 func _begin_ledge_climb() -> void:
-	var bounds: Rect2 = _ledge_bounds()
+	var bounds: Rect2 = _body_bounds()
 	var raised: Vector2 = Vector2(global_position.x, _ledge_top.y - bounds.end.y - ledge_clearance)
 	var inner_side: float = bounds.position.x if _ledge_direction > 0.0 else bounds.end.x
 	var standing: Vector2 = Vector2(_ledge_top.x - inner_side + _ledge_direction * ledge_clearance, raised.y)
@@ -562,8 +564,7 @@ func _process_state_transitions() -> void:
 	if not _state_transitions.has(current_state):
 		return
 
-	var transitions: Array = _state_transitions[current_state]
-	for transition in transitions:
+	for transition: Dictionary in _state_transitions[current_state]:
 		var condition: Callable = transition["condition"]
 		if condition.call():
 			_transition_to_state(transition["target"])
@@ -572,19 +573,9 @@ func _process_state_transitions() -> void:
 func _transition_to_state(new_state: PlayerState) -> void:
 	if current_state == new_state:
 		return
-		
-	var old_state_enum: PlayerState = current_state
-	_exit_state(old_state_enum)
+	var old_state: PlayerState = current_state
 	current_state = new_state
-	_enter_state(new_state)
-	
-	state_changed.emit(PlayerState.keys()[old_state_enum], PlayerState.keys()[new_state])
-
-func _enter_state(_state: PlayerState) -> void:
-	pass
-
-func _exit_state(_state: PlayerState) -> void:
-	pass
+	state_changed.emit(PlayerState.keys()[old_state], PlayerState.keys()[new_state])
 
 # --- State Transition Condition Evaluators ---
 
@@ -638,17 +629,14 @@ func _resolve_facing(input_dir: float) -> void:
 		_update_sprite_facing(input_dir)
 
 func _update_sprite_facing(facing_dir: float) -> void:
-	if sprite == null or facing_dir == 0.0:
-		return
-		
-	var target_sign: float = signf(facing_dir)
+	if sprite != null and facing_dir != 0.0:
+		sprite.flip_h = facing_dir < 0.0
 
-	if sprite is Sprite2D:
-		(sprite as Sprite2D).flip_h = (target_sign < 0.0)
-	elif sprite is AnimatedSprite2D:
-		(sprite as AnimatedSprite2D).flip_h = (target_sign < 0.0)
-	else:
-		sprite.scale.x = absf(sprite.scale.x) * target_sign
+## Returns 1.0 when the player faces right and -1.0 when facing left.
+func get_facing_direction() -> float:
+	if sprite == null:
+		return 1.0 if velocity.x >= 0.0 else -1.0
+	return -1.0 if sprite.flip_h else 1.0
 
 # Capture only this physics move, excluding teleports between ticks.
 func _move_with_animation_travel() -> void:
@@ -660,22 +648,21 @@ func _move_with_animation_travel() -> void:
 func _update_animation() -> void:
 	var travel: Vector2 = _animation_travel
 	_animation_travel = Vector2.ZERO
-	if not sprite is AnimatedSprite2D:
+	if sprite == null:
 		return
-	var animated_sprite: AnimatedSprite2D = sprite as AnimatedSprite2D
 	if current_state == PlayerState.LEDGE_HANG:
 		if not _hang_visual_active:
-			_sprite_rest_scale = animated_sprite.scale
-			_sprite_rest_position = animated_sprite.position
+			_sprite_rest_scale = sprite.scale
+			_sprite_rest_position = sprite.position
 			_hang_visual_active = true
-		animated_sprite.scale = _sprite_rest_scale * ledge_sprite_scale
+		sprite.scale = _sprite_rest_scale * ledge_sprite_scale
 		var grip: Vector2 = ledge_sprite_grip
-		if animated_sprite.flip_h:
+		if sprite.flip_h:
 			grip.x = -grip.x
-		animated_sprite.position = to_local(_ledge_top) - animated_sprite.transform.basis_xform(grip)
+		sprite.position = to_local(_ledge_top) - sprite.transform.basis_xform(grip)
 	elif _hang_visual_active:
-		animated_sprite.scale = _sprite_rest_scale
-		animated_sprite.position = _sprite_rest_position
+		sprite.scale = _sprite_rest_scale
+		sprite.position = _sprite_rest_position
 		_hang_visual_active = false
 	var animation_name: StringName = &"idle"
 	var cycle_advance: float = 0.0
@@ -686,11 +673,11 @@ func _update_animation() -> void:
 		PlayerState.LEDGE_CLIMB:
 			animation_name = &"climb"
 			distance_driven = true
-			cycle_advance = travel.length() / maxf(climb_cycle_distance * animated_sprite.global_transform.y.length(), 0.001)
+			cycle_advance = travel.length() / maxf(climb_cycle_distance * sprite.global_transform.y.length(), 0.001)
 		PlayerState.WALK:
 			animation_name = &"walk"
 			distance_driven = true
-			var cycle_distance: float = walk_cycle_distance * animated_sprite.global_transform.x.length()
+			var cycle_distance: float = walk_cycle_distance * sprite.global_transform.x.length()
 			if absf(travel.x) > 0.001:
 				cycle_advance = absf(travel.x) / maxf(cycle_distance, 0.001)
 		PlayerState.JUMP:
@@ -702,21 +689,21 @@ func _update_animation() -> void:
 		PlayerState.WALL_CLIMB, PlayerState.WALL_SLIDE, PlayerState.WALL_HOLD, PlayerState.WALL_REPOSITION:
 			animation_name = &"climb"
 			distance_driven = true
-			var cycle_distance: float = climb_cycle_distance * animated_sprite.global_transform.y.length()
+			var cycle_distance: float = climb_cycle_distance * sprite.global_transform.y.length()
 			# Tired slipping keeps the grip pose; intentional descent reverses the cycle.
-			if is_climbing and Input.get_axis("move_up", "move_down") != 0.0 and absf(travel.y) > 0.001:
+			if is_climbing and cached_climb_input != 0.0 and absf(travel.y) > 0.001:
 				cycle_advance = -travel.y / maxf(cycle_distance, 0.001)
-	if animated_sprite.sprite_frames == null or not animated_sprite.sprite_frames.has_animation(animation_name):
+	if sprite.sprite_frames == null or not sprite.sprite_frames.has_animation(animation_name):
 		return
-	if animated_sprite.animation != animation_name:
+	if sprite.animation != animation_name:
 		_animation_cycle = 0.0
-		animated_sprite.animation = animation_name
+		sprite.animation = animation_name
 	if distance_driven:
-		animated_sprite.pause()
+		sprite.pause()
 		_animation_cycle = fposmod(_animation_cycle + cycle_advance, 1.0)
-		_set_locomotion_frame(animated_sprite)
+		_set_locomotion_frame(sprite)
 	else:
-		animated_sprite.play(animation_name)
+		sprite.play(animation_name)
 
 func _set_locomotion_frame(animated_sprite: AnimatedSprite2D) -> void:
 	var frames: SpriteFrames = animated_sprite.sprite_frames
@@ -733,17 +720,6 @@ func _set_locomotion_frame(animated_sprite: AnimatedSprite2D) -> void:
 			return
 		remaining -= duration
 
-func _get_current_facing_direction() -> float:
-	if sprite == null:
-		return 1.0 if velocity.x >= 0.0 else -1.0
-		
-	if sprite is Sprite2D:
-		return -1.0 if (sprite as Sprite2D).flip_h else 1.0
-	elif sprite is AnimatedSprite2D:
-		return -1.0 if (sprite as AnimatedSprite2D).flip_h else 1.0
-	else:
-		return signf(sprite.scale.x) if sprite.scale.x != 0.0 else 1.0
-
 func _update_timers(delta: float) -> void:
 	coyote_timer = maxf(0.0, coyote_timer - delta)
 	jump_buffer_timer = maxf(0.0, jump_buffer_timer - delta)
@@ -752,9 +728,10 @@ func _update_timers(delta: float) -> void:
 	wall_reposition_timer = maxf(0.0, wall_reposition_timer - delta)
 	_wall_jump_input_timer = maxf(0.0, _wall_jump_input_timer - delta)
 	_wall_away_input_timer = maxf(0.0, _wall_away_input_timer - delta)
+	_ledge_regrab_timer = maxf(0.0, _ledge_regrab_timer - delta)
 
 func _update_weapon_cooldowns(delta: float) -> void:
-	for weapon in inventory:
+	for weapon: WeaponData in inventory:
 		if weapon != null:
 			weapon.update(delta)
 
@@ -788,7 +765,7 @@ func _apply_horizontal_movement(input_dir: float, delta: float) -> void:
 	else:
 		velocity.x = move_toward(velocity.x, 0.0, deccel * delta)
 
-func _handle_jump(_input_dir: float) -> void:
+func _handle_jump() -> void:
 	if jump_buffer_timer > 0.0:
 		if ground_jump_available and coyote_timer > 0.0:
 			_execute_jump(false)
@@ -824,21 +801,20 @@ func _execute_wall_jump(saved_normal: float = 0.0) -> void:
 	ground_jump_available = false
 	is_climbing = false
 
+# Returns the first hit on collider, skipping other bodies that would hide the contacted wall's top.
 func _wall_height_ray(from: Vector2, to: Vector2, collider: Object) -> Dictionary:
 	var excluded: Array[RID] = [get_rid()]
 	var query: PhysicsRayQueryParameters2D = PhysicsRayQueryParameters2D.create(from, to, collision_mask, excluded)
 	query.hit_from_inside = true
-	while true:
-		var hit: Dictionary = get_world_2d().direct_space_state.intersect_ray(query)
-		if hit.is_empty() or hit.collider == collider:
-			return hit
-		# Other nearby bodies must not hide the contacted wall's top.
+	var hit: Dictionary = get_world_2d().direct_space_state.intersect_ray(query)
+	while not hit.is_empty() and hit.collider != collider:
 		excluded.append(hit.rid)
 		query.exclude = excluded
-	return {}
+		hit = get_world_2d().direct_space_state.intersect_ray(query)
+	return hit
 
 func _wall_is_tall_enough() -> bool:
-	var bounds: Rect2 = _ledge_bounds()
+	var bounds: Rect2 = _body_bounds()
 	var height: float = bounds.size.y
 	if height <= 0.0:
 		return false
@@ -874,15 +850,15 @@ func _handle_wall_interactions(input_dir: float, climb_input: float, delta: floa
 		return true
 	var wall_normal: float = get_wall_normal().x
 	if _wall_jump_origin_normal * wall_normal < 0.0:
+		# Start on arrival, not takeoff; allow holding/sliding but block upward climbing.
 		wall_reposition_timer = maxf(0.0, wall_reposition_duration)
 		_wall_jump_origin_normal = 0.0
-		# Start on arrival, not takeoff; allow holding/sliding but block upward climbing.
 	# Normals point away from either wall: positive product means away input.
 	if input_dir * wall_normal > 0.0:
 		if _wall_jump_input_timer > 0.0 or Input.is_action_just_pressed("move_jump"):
 			_execute_wall_jump()
 		else:
-			_release_wall(true)
+			_push_off_wall()
 		return true
 	var holding: bool = input_dir * wall_normal < 0.0
 	var climbing: bool = climb_input != 0.0
@@ -904,30 +880,29 @@ func _handle_wall_interactions(input_dir: float, climb_input: float, delta: floa
 	velocity.x = -wall_normal * move_speed * get_stamina_speed_multiplier()
 	return true
 
-func _release_wall(push_away: bool) -> void:
+# A downward push-off spends the remaining air jumps; a Jump press within the grace window
+# upgrades it to a wall jump, which refills them.
+func _push_off_wall() -> void:
 	_clear_wall_jump_inputs()
-	if push_away:
-		_wall_away_normal = get_wall_normal().x
-		_wall_away_input_timer = maxf(0.0, wall_jump_input_grace)
-	velocity.x = get_wall_normal().x * absf(wall_drop_impulse.x) * get_stamina_speed_multiplier() if push_away else 0.0
+	var wall_normal: float = get_wall_normal().x
+	_wall_away_normal = wall_normal
+	_wall_away_input_timer = maxf(0.0, wall_jump_input_grace)
+	velocity.x = wall_normal * absf(wall_drop_impulse.x) * get_stamina_speed_multiplier()
 	velocity.y = maxf(velocity.y, absf(wall_drop_impulse.y) * get_stamina_speed_multiplier())
 	wall_jump_timer = wall_jump_control_lock
 	jump_buffer_timer = 0.0
 	coyote_timer = 0.0
 	ground_jump_available = false
+	jumps_left = 0
 	is_climbing = false
 
 func _handle_dash_input() -> void:
 	if dash_unlocked and Input.is_action_just_pressed("dash") and dash_cooldown_timer <= 0.0 and not is_dashing:
-		var raw_dir: Vector2 = Vector2(
-			Input.get_axis("move_left", "move_right"),
-			Input.get_axis("move_up", "move_down")
-		)
-		
+		var raw_dir: Vector2 = Vector2(cached_input_dir, cached_climb_input)
 		if raw_dir != Vector2.ZERO:
 			dash_direction = raw_dir.normalized()
 		else:
-			dash_direction = Vector2(_get_current_facing_direction(), 0.0)
+			dash_direction = Vector2(get_facing_direction(), 0.0)
 
 		is_dashing = true
 		_clear_wall_jump_inputs()
@@ -940,36 +915,41 @@ func _process_dash(delta: float) -> void:
 	stamina -= maxf(0.0, dash_stamina_drain) * minf(delta, maxf(0.0, dash_timer))
 	dash_timer -= delta
 	velocity = dash_direction * dash_speed * get_stamina_speed_multiplier()
-	
+
 	if dash_preserve_vertical and is_zero_approx(dash_direction.y):
 		velocity.y = dash_start_vertical_velocity
-		
+
 	if dash_timer <= 0.0:
 		is_dashing = false
 
 func _handle_weapon_input() -> void:
 	if inventory.is_empty():
 		return
-		
+
 	if Input.is_action_just_pressed("next_weapon"):
-		active_weapon_index = posmod(active_weapon_index + 1, inventory.size())
-		weapon_switched.emit(active_weapon_index, inventory[active_weapon_index])
+		_select_weapon(active_weapon_index + 1)
 	elif Input.is_action_just_pressed("prev_weapon"):
-		active_weapon_index = posmod(active_weapon_index - 1, inventory.size())
-		weapon_switched.emit(active_weapon_index, inventory[active_weapon_index])
-		
+		_select_weapon(active_weapon_index - 1)
+
 	if Input.is_action_just_pressed("attack"):
 		_use_weapon()
+
+## Adds a copy of weapon to the inventory so its cooldown is per player. Returns the new slot index.
+func add_weapon(weapon: WeaponData, equip: bool = true) -> int:
+	inventory.append(weapon.duplicate() as WeaponData)
+	var index: int = inventory.size() - 1
+	# The first weapon is always active, so announce it even without equip.
+	if equip or index == 0:
+		_select_weapon(index)
+	return index
+
+func _select_weapon(index: int) -> void:
+	active_weapon_index = posmod(index, inventory.size())
+	weapon_switched.emit(active_weapon_index, inventory[active_weapon_index])
 
 func _use_weapon() -> void:
 	if active_weapon_index >= inventory.size():
 		return
-		
 	var current_weapon: WeaponData = inventory[active_weapon_index]
-	if current_weapon == null:
-		return
-		
-	var fire_dir: Vector2 = Vector2(_get_current_facing_direction(), 0.0)
-	if current_weapon.can_use():
-		if current_weapon.execute(self, fire_dir):
-			weapon_used.emit(active_weapon_index, current_weapon)
+	if current_weapon != null and current_weapon.execute(self, Vector2(get_facing_direction(), 0.0)):
+		weapon_used.emit(active_weapon_index, current_weapon)

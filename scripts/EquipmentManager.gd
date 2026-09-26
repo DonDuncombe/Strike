@@ -30,22 +30,14 @@ func _process(_delta: float) -> void:
 		return
 		
 	# Synchronize anchor scale/facing with player direction
-	var facing_dir: float = player._get_current_facing_direction()
-	weapon_anchor.scale.x = absf(weapon_anchor.scale.x) * facing_dir
+	weapon_anchor.scale.x = absf(weapon_anchor.scale.x) * player.get_facing_direction()
 
 func _on_weapon_switched(_index: int, weapon_data: WeaponData) -> void:
 	current_weapon = weapon_data
-	
-	if current_weapon == null:
-		if weapon_sprite != null:
-			weapon_sprite.texture = null
+	if weapon_sprite == null:
 		return
-
-	# Handle weapon display switching
-	if weapon_sprite != null:
-		# If WeaponData is extended with a texture export property:
-		if current_weapon.get("texture") != null:
-			weapon_sprite.texture = current_weapon.get("texture") as Texture2D
+	# WeaponData subclasses may add a texture property; clear the sprite when the new weapon has none.
+	weapon_sprite.texture = current_weapon.get("texture") as Texture2D if current_weapon != null else null
 
 func _on_weapon_used(_index: int, weapon_data: WeaponData) -> void:
 	if animation_player == null or weapon_data == null:

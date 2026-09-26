@@ -50,7 +50,7 @@ func _run() -> void:
 			_check(handled == tall_enough and player.is_climbing == tall_enough, "Only character-height walls may take over jump")
 			if not handled:
 				_check(player.velocity.y == -200.0 and player.stamina == 100.0, "Short wall must preserve upward velocity and stamina")
-				player._handle_jump(direction)
+				player._handle_jump()
 				_check(is_equal_approx(player.velocity.y, player.initial_jump_velocity) and not player.is_climbing, "Short wall must allow buffered regular jump")
 			player.free()
 			wall.free()
