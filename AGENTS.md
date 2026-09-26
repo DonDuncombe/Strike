@@ -18,7 +18,7 @@ Use [AGENT_godot.md](AGENT_godot.md) for the project's Godot workflow and [godot
 
 ## Save command
 
-- When the user types `save as "x"`, treat the text inside the quotes as the save name. Stage all current changes, commit them with that name as the commit message, and push the current branch to `origin`.
+- When the user types `save as x`, treat everything after `save as` as the save name. Quotes are optional: `save as My change` and `save as "My change"` both use `My change`, without the quotes. Stage all current changes, commit them with that name as the commit message, and push the current branch to `origin`.
 - Before committing, check `git status`. If there is nothing to commit and nothing unpushed, do not create an empty commit. Tell the user the codebase version is up to date.
 - If there is nothing new to commit but local commits have not been pushed, push them and report that.
 
