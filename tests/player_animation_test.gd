@@ -90,9 +90,38 @@ func _run() -> void:
 	player._animation_travel = Vector2(walk_distance / 12.0, 0.0)
 	player._update_animation()
 	_check(sprite.frame == 0 and is_equal_approx(sprite.frame_progress, 0.5), "Relative frame durations retain their timing within the distance cycle")
-	for state: int in [PlayerController.PlayerState.JUMP, PlayerController.PlayerState.FALL, PlayerController.PlayerState.DASH]:
-		player.current_state = state as PlayerController.PlayerState
-		player._update_animation()
-		_check(sprite.sprite_frames.get_frame_count(sprite.animation) == 1, "Air states retain still poses")
+	player.current_state = PlayerController.PlayerState.DASH
+	player._update_animation()
+	_check(sprite.sprite_frames.get_frame_count(sprite.animation) == 1, "Dash retains a still pose")
+	_check_jump_animation(player, sprite)
 	print("Animation tests: ", failures, " failures")
 	quit(1 if failures > 0 else 0)
+
+func _check_jump_animation(player: PlayerController, sprite: AnimatedSprite2D) -> void:
+	for animation_name: StringName in [&"jump", &"fall", &"land"]:
+		for index: int in range(sprite.sprite_frames.get_frame_count(animation_name)):
+			var texture: AtlasTexture = sprite.sprite_frames.get_frame_texture(animation_name, index) as AtlasTexture
+			_check(texture != null and texture.atlas.resource_path == "res://assets/images/Skelly/Skelly-jump.png", "%s must use the Skelly jump sheet" % animation_name)
+			_check(texture != null and texture.get_size() == Vector2(256, 256), "Shadow-cropped jump frames must keep the 256 px frame size")
+	var rest_scale: Vector2 = sprite.scale
+	player.current_state = PlayerController.PlayerState.JUMP
+	player.velocity.y = player.initial_jump_velocity
+	player._update_animation()
+	_check(sprite.animation == &"jump" and sprite.frame == 0, "Takeoff shows the first rising frame")
+	_check(sprite.scale.is_equal_approx(rest_scale * PlayerController.LARGE_SHEET_SCALE), "Jump art must be scaled to match the walk art")
+	player.velocity.y = 0.0
+	player._update_animation()
+	_check(sprite.frame == 2, "Apex shows the last rising frame")
+	player._transition_to_state(PlayerController.PlayerState.FALL)
+	player._update_animation()
+	_check(sprite.animation == &"fall" and sprite.frame == 0, "Falling starts from the apex fall frame")
+	player.velocity.y = -player.initial_jump_velocity
+	player._update_animation()
+	_check(sprite.frame == 1, "Fast falling shows the last fall frame")
+	player._transition_to_state(PlayerController.PlayerState.IDLE)
+	player._update_animation()
+	_check(sprite.animation == &"land" and sprite.is_playing(), "Landing into idle plays the landing frames")
+	sprite.frame = sprite.sprite_frames.get_frame_count(&"land") - 1
+	sprite.pause()
+	player._update_animation()
+	_check(sprite.animation == &"idle" and sprite.scale.is_equal_approx(rest_scale), "Idle and walk scale return after landing")

@@ -15,10 +15,12 @@ enum PlayerState { IDLE, WALK, JUMP, FALL, DASH, WALL_SLIDE, WALL_HOLD, WALL_CLI
 const CROUCH_TRANSITION_TIME: float = 0.15
 ## Crouched collider height as a fraction of the standing collider; the feet stay in place.
 const CROUCH_HEIGHT_RATIO: float = 0.68
-## The crouch sheet is drawn larger than the walk sheet. This matches its head size (64 vs 47 source px).
-const CROUCH_SPRITE_SCALE: float = 0.734
-## Source-pixel shift that puts the scaled crouch feet (117 px below frame center) on the walk feet (89 px).
-const CROUCH_SPRITE_FEET_SHIFT: float = 3.1
+## The crouch and jump sheets are drawn larger than the walk sheet. This matches their head size (64 vs 47 source px).
+const LARGE_SHEET_SCALE: float = 0.734
+## Source-pixel shift that puts the scaled crouch and jump feet (117 px below frame center) on the walk feet (89 px).
+const LARGE_SHEET_FEET_SHIFT: float = 3.1
+## Animations drawn on the larger crouch and jump sheets.
+const LARGE_SHEET_ANIMATIONS: Array[StringName] = [&"crouch", &"jump", &"fall", &"land"]
 ## Crouched movement speed as a fraction of the stamina-scaled Move Speed.
 # TODO: Placeholder crouch-walk that slides the held crouch frame. Replace with the crouch-walk/crawl animation when it is added.
 const CROUCH_WALK_SPEED_MULTIPLIER: float = 0.35
@@ -235,6 +237,8 @@ var _ledge_waypoints: Array[Vector2] = []
 var _animation_cycle: float = 0.0
 var _animation_travel: Vector2 = Vector2.ZERO
 var _sprite_override_active: bool = false
+# True from touching down into IDLE until the landing frames finish.
+var _landing: bool = false
 var _sprite_rest_scale: Vector2
 var _sprite_rest_position: Vector2
 
@@ -742,6 +746,7 @@ func _transition_to_state(new_state: PlayerState) -> void:
 		return
 	var old_state: PlayerState = current_state
 	current_state = new_state
+	_landing = new_state == PlayerState.IDLE and (old_state == PlayerState.JUMP or old_state == PlayerState.FALL)
 	state_changed.emit(PlayerState.keys()[old_state], PlayerState.keys()[new_state])
 
 # --- State Transition Condition Evaluators ---
@@ -823,24 +828,8 @@ func _update_animation() -> void:
 	# shuffles onto the ledge. Replace with the dedicated transition animation when it is provided.
 	if is_crouching and not (current_state == PlayerState.LEDGE_CLIMB and _ledge_waypoints.size() > 1):
 		crouch_pose = true
-	if current_state == PlayerState.LEDGE_HANG or crouch_pose:
-		if not _sprite_override_active:
-			_sprite_rest_scale = sprite.scale
-			_sprite_rest_position = sprite.position
-			_sprite_override_active = true
-		if crouch_pose:
-			sprite.scale = _sprite_rest_scale * CROUCH_SPRITE_SCALE
-			sprite.position = _sprite_rest_position + Vector2(0.0, CROUCH_SPRITE_FEET_SHIFT * _sprite_rest_scale.y)
-		else:
-			sprite.scale = _sprite_rest_scale * ledge_sprite_scale
-			var grip: Vector2 = ledge_sprite_grip
-			if sprite.flip_h:
-				grip.x = -grip.x
-			sprite.position = to_local(_ledge_top) - sprite.transform.basis_xform(grip)
-	elif _sprite_override_active:
-		sprite.scale = _sprite_rest_scale
-		sprite.position = _sprite_rest_position
-		_sprite_override_active = false
+	if _landing and sprite.animation == &"land" and not sprite.is_playing():
+		_landing = false
 	var animation_name: StringName = &"idle"
 	var cycle_advance: float = 0.0
 	var distance_driven: bool = false
@@ -872,8 +861,11 @@ func _update_animation() -> void:
 				cycle_advance = -travel.y / maxf(cycle_distance, 0.001)
 	if crouch_pose:
 		animation_name = &"crouch"
+	elif current_state == PlayerState.IDLE and _landing:
+		animation_name = &"land"
 	if sprite.sprite_frames == null or not sprite.sprite_frames.has_animation(animation_name):
 		return
+	_apply_sprite_override(animation_name)
 	if sprite.animation != animation_name:
 		_animation_cycle = 0.0
 		sprite.animation = animation_name
@@ -886,8 +878,37 @@ func _update_animation() -> void:
 		sprite.pause()
 		_animation_cycle = fposmod(_animation_cycle + cycle_advance, 1.0)
 		_set_locomotion_frame(sprite)
+	elif animation_name == &"jump" or animation_name == &"fall":
+		# Rising frames run from launch speed to the apex; falling frames from the apex to launch speed downward.
+		sprite.pause()
+		var launch_speed: float = maxf(-initial_jump_velocity, 0.001)
+		var air_progress: float = clampf(1.0 + velocity.y / launch_speed, 0.0, 1.0) if animation_name == &"jump" else clampf(velocity.y / launch_speed, 0.0, 1.0)
+		var last_air_frame: int = sprite.sprite_frames.get_frame_count(animation_name) - 1
+		sprite.set_frame_and_progress(roundi(air_progress * last_air_frame), 0.0)
 	else:
 		sprite.play(animation_name)
+
+# Rescales and repositions the sprite for artwork drawn at a different size than the walk sheet.
+func _apply_sprite_override(animation_name: StringName) -> void:
+	var large_sheet: bool = LARGE_SHEET_ANIMATIONS.has(animation_name)
+	if large_sheet or animation_name == &"hang":
+		if not _sprite_override_active:
+			_sprite_rest_scale = sprite.scale
+			_sprite_rest_position = sprite.position
+			_sprite_override_active = true
+		if large_sheet:
+			sprite.scale = _sprite_rest_scale * LARGE_SHEET_SCALE
+			sprite.position = _sprite_rest_position + Vector2(0.0, LARGE_SHEET_FEET_SHIFT * _sprite_rest_scale.y)
+		else:
+			sprite.scale = _sprite_rest_scale * ledge_sprite_scale
+			var grip: Vector2 = ledge_sprite_grip
+			if sprite.flip_h:
+				grip.x = -grip.x
+			sprite.position = to_local(_ledge_top) - sprite.transform.basis_xform(grip)
+	elif _sprite_override_active:
+		sprite.scale = _sprite_rest_scale
+		sprite.position = _sprite_rest_position
+		_sprite_override_active = false
 
 func _set_locomotion_frame(animated_sprite: AnimatedSprite2D) -> void:
 	var frames: SpriteFrames = animated_sprite.sprite_frames

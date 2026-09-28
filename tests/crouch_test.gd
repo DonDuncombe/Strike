@@ -50,7 +50,7 @@ func _run() -> void:
 	_check(player.is_crouching and player.current_state == PlayerController.PlayerState.CROUCH, "Holding crouch on the floor must crouch")
 	_check(crouched.size.y < standing.size.y and is_equal_approx(crouched.end.y, standing.end.y), "Crouching must lower the collider top and keep the feet in place")
 	_check(sprite.animation == &"crouch" and sprite.frame == 4 and not sprite.is_playing(), "Full crouch must hold the last crouch frame")
-	_check(sprite.scale.is_equal_approx(rest_scale * PlayerController.CROUCH_SPRITE_SCALE), "Crouch art must be scaled to match the walk art")
+	_check(sprite.scale.is_equal_approx(rest_scale * PlayerController.LARGE_SHEET_SCALE), "Crouch art must be scaled to match the walk art")
 
 	var x_before: float = player.position.x
 	Input.action_press("move_left")
